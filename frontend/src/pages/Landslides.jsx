@@ -45,7 +45,7 @@ export default function Landslides() {
       <div className="flex justify-between items-center mb-4">
         <div>
           <h1 className="text-3xl font-bold">India Landslide Monitoring</h1>
-          <p className="text-gray-400">Mock Landslide Data (Stored in DB)</p>
+          <p className="text-gray-400">Landslide Data (Stored in DB)</p>
         </div>
         <button
           onClick={syncNow}
@@ -86,7 +86,7 @@ export default function Landslides() {
                     }`}
                   >
                     <td className="p-3">{l.place}</td>
-                    <td className="p-3">{l.severity}</td>
+                    <td className="p-3">{l.risk || l.severity}</td>
                     <td className="p-3 text-gray-300">
                       {new Date(l.time).toLocaleString()}
                     </td>

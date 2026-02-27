@@ -65,3 +65,29 @@ export async function getAlerts() {
   if (!res.ok) throw new Error("Failed to fetch alerts");
   return res.json();
 }
+
+export async function generateAlerts() {
+  const res = await fetch("/api/alerts/generate", {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error("Failed to generate alerts");
+  return res.json();
+}
+
+export async function getRiskTrend() {
+  const res = await fetch("/api/analytics/risk-trend");
+  if (!res.ok) throw new Error("Failed to fetch risk trend");
+  return res.json();
+}
+
+export async function getDisasterFrequency() {
+  const res = await fetch("/api/analytics/disaster-frequency");
+  if (!res.ok) throw new Error("Failed to fetch disaster frequency");
+  return res.json();
+}
+
+export async function getPredictionConfidenceSeries() {
+  const res = await fetch("/api/analytics/prediction-confidence");
+  if (!res.ok) throw new Error("Failed to fetch prediction confidence");
+  return res.json();
+}

@@ -37,9 +37,22 @@ function FlyTo({ lat, lon }) {
 export default function DisasterMap({ selected, title = "Live Map" }) {
   const lat = selected?.latitude ?? selected?.lat;
   const lon = selected?.longitude ?? selected?.lon;
+  const disaster = (selected?.disaster || selected?.type || title || "").toLowerCase();
 
   // default center India
   const center = lat && lon ? [lat, lon] : [22.9734, 78.6569];
+  const markerIcon = new L.Icon({
+    iconUrl: disaster.includes("flood")
+      ? "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-blue.png"
+      : disaster.includes("landslide")
+      ? "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-orange.png"
+      : "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png",
+    shadowUrl: markerShadow,
+    iconSize: [25, 41],
+    iconAnchor: [12, 41],
+    popupAnchor: [1, -34],
+    shadowSize: [41, 41],
+  });
 
   return (
     <div className="bg-white/5 border border-white/10 rounded-xl p-4">
@@ -62,14 +75,14 @@ export default function DisasterMap({ selected, title = "Live Map" }) {
 
           {/* ✅ Marker (blue locator) */}
           {lat && lon && (
-            <Marker position={[lat, lon]}>
+            <Marker position={[lat, lon]} icon={markerIcon}>
               <Popup>
                 <div className="text-sm">
                   <p className="font-bold">{selected.place || "Selected Location"}</p>
                   {selected.magnitude !== undefined && (
                     <p>Magnitude: {selected.magnitude}</p>
                   )}
-                  {selected.severity && <p>Severity: {selected.severity}</p>}
+                  {(selected.risk || selected.severity) && <p>Severity: {selected.risk || selected.severity}</p>}
                 </div>
               </Popup>
             </Marker>

@@ -46,7 +46,7 @@ export default function Floods() {
       <div className="flex justify-between items-center mb-4">
         <div>
           <h1 className="text-3xl font-bold">India Flood Monitoring</h1>
-          <p className="text-gray-400">Mock Flood Data (Stored in DB)</p>
+          <p className="text-gray-400">Flood Data (Stored in DB)</p>
         </div>
         <button
           onClick={syncNow}
@@ -87,7 +87,7 @@ export default function Floods() {
                     }`}
                   >
                     <td className="p-3">{f.place}</td>
-                    <td className="p-3">{f.severity}</td>
+                    <td className="p-3">{f.risk || f.severity}</td>
                     <td className="p-3 text-gray-300">
                       {new Date(f.time).toLocaleString()}
                     </td>

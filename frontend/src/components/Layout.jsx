@@ -6,6 +6,7 @@ import {
   Waves,
   Mountain,
   Brain,
+  Radar,
   Bell,
   Shield
 } from "lucide-react";
@@ -42,6 +43,10 @@ export default function Layout() {
 
           <NavLink to="/predictor" className={linkClass}>
             <Brain size={18} /> Predictor
+          </NavLink>
+
+          <NavLink to="/research-predictor" className={linkClass}>
+            <Radar size={18} /> Research Predictor
           </NavLink>
 
           <NavLink to="/mitigation" className={linkClass}>

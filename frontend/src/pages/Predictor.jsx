@@ -1,87 +1,114 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
+import { Activity, Brain, Gauge, Mountain, Waves } from "lucide-react";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+
 import { predictDisasterRisk, runAlertCheck } from "../api/disasterApi";
+
+const COLORS = {
+  Low: "text-green-300 border-green-400/40 bg-green-500/20",
+  Medium: "text-orange-300 border-orange-400/40 bg-orange-500/20",
+  High: "text-red-300 border-red-400/40 bg-red-500/20",
+};
 
 export default function Predictor() {
   const [disaster, setDisaster] = useState("flood");
   const [payload, setPayload] = useState({
-    rainfall_24h_mm: 0,
-    rainfall_7d_mm: 0,
-    soil_moisture: 0.5,
-    slope_deg: 10,
-    ndvi: 0.5,
+    latitude: 26.14,
+    longitude: 91.73,
+    rainfall_24h_mm: 140,
+    soil_moisture: 0.62,
+    slope_deg: 18,
+    ndvi: 0.45,
     plant_density: 0.5,
-    seismic_mag: 0,
-    depth_km: 0,
+    seismic_mag: 2.4,
+    depth_km: 30,
   });
-
   const [result, setResult] = useState(null);
   const [alertRes, setAlertRes] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [logs, setLogs] = useState([]);
   const [error, setError] = useState("");
 
-  function handleChange(e) {
-    const { name, value } = e.target;
-    setPayload((p) => ({ ...p, [name]: value }));
+  const preparedPayload = useMemo(
+    () => ({
+      disaster,
+      disaster_type: disaster,
+      latitude: Number(payload.latitude),
+      longitude: Number(payload.longitude),
+      rainfall_24h_mm: Number(payload.rainfall_24h_mm),
+      soil_moisture: Number(payload.soil_moisture),
+      slope_deg: Number(payload.slope_deg),
+      ndvi: Number(payload.ndvi),
+      plant_density: Number(payload.plant_density),
+      seismic_mag: Number(payload.seismic_mag),
+      seismic_magnitude: Number(payload.seismic_mag),
+      depth_km: Number(payload.depth_km),
+    }),
+    [payload, disaster]
+  );
+
+  const fiRows = result?.feature_importance
+    ? Object.entries(result.feature_importance)
+        .map(([feature, value]) => ({ feature, importance: Number(value) }))
+        .sort((a, b) => b.importance - a.importance)
+    : [];
+
+  function setField(name, value) {
+    setPayload((prev) => ({ ...prev, [name]: value }));
   }
 
-  async function handlePredict() {
-    setError("");
+  function pushLog(message) {
+    const line = `${new Date().toLocaleTimeString()} - ${message}`;
+    console.log("[Predictor]", line);
+    setLogs((prev) => [line, ...prev].slice(0, 8));
+  }
+
+  async function runPrediction() {
+    setLoading(true);
     setResult(null);
     setAlertRes(null);
+    setError("");
+    pushLog("Run AI Prediction clicked");
 
     try {
-      const res = await predictDisasterRisk({
-        disaster,
-        ...payload,
-        rainfall_24h_mm: Number(payload.rainfall_24h_mm),
-        rainfall_7d_mm: Number(payload.rainfall_7d_mm),
-        soil_moisture: Number(payload.soil_moisture),
-        slope_deg: Number(payload.slope_deg),
-        ndvi: Number(payload.ndvi),
-        plant_density: Number(payload.plant_density),
-        seismic_mag: Number(payload.seismic_mag),
-        depth_km: Number(payload.depth_km),
-      });
-
-      setResult(res.result);
+      const response = await predictDisasterRisk(preparedPayload);
+      const output = response.result || response;
+      setResult(output);
+      pushLog(`Prediction complete: ${output.risk_level || output.level} (${output.method || "Unknown"})`);
     } catch (err) {
       setError(err.message || "Prediction failed");
+      pushLog("Prediction failed");
+    } finally {
+      setLoading(false);
     }
   }
 
-  async function handleCreateAlert() {
+  async function createAlert() {
     setError("");
-    setAlertRes(null);
-
     try {
-      const res = await runAlertCheck({
-        disaster,
-        ...payload,
-        threshold: 70,
-        rainfall_24h_mm: Number(payload.rainfall_24h_mm),
-        rainfall_7d_mm: Number(payload.rainfall_7d_mm),
-        soil_moisture: Number(payload.soil_moisture),
-        slope_deg: Number(payload.slope_deg),
-        ndvi: Number(payload.ndvi),
-        plant_density: Number(payload.plant_density),
-        seismic_mag: Number(payload.seismic_mag),
-        depth_km: Number(payload.depth_km),
-      });
-
+      pushLog("Manual alert check triggered");
+      const res = await runAlertCheck({ ...preparedPayload, threshold: 70 });
       setAlertRes(res);
+      pushLog(res.alert_created ? "Alert created" : "No alert created");
     } catch (err) {
       setError(err.message || "Alert creation failed");
+      pushLog("Alert generation failed");
     }
   }
 
-  return (
-    <div className="p-6 text-white">
-      <h1 className="text-3xl font-bold mb-2">AI Predictor (Risk Forecast)</h1>
-      <p className="text-gray-400 mb-6">
-        This does not "see the future". It generates a <b>risk probability</b> using scientific rules.
-      </p>
+  const levelText = result?.risk_level || result?.level || "Medium";
 
-      <div className="bg-white/5 border border-white/10 rounded-2xl p-5 max-w-3xl">
-        <div className="flex gap-3 mb-4">
+  return (
+    <div className="p-6 text-white space-y-5">
+      <div>
+        <h1 className="text-3xl font-bold flex items-center gap-2">
+          <Brain size={28} /> AI Predictor
+        </h1>
+        <p className="text-gray-400">ML-driven multi-hazard risk prediction with explainability.</p>
+      </div>
+
+      <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+        <div className="flex flex-wrap gap-3 items-center mb-5">
           <select
             value={disaster}
             onChange={(e) => setDisaster(e.target.value)}
@@ -93,88 +120,110 @@ export default function Predictor() {
           </select>
 
           <button
-            onClick={handlePredict}
-            className="px-4 py-2 bg-blue-600 rounded-xl hover:bg-blue-700 transition"
+            onClick={runPrediction}
+            disabled={loading}
+            className="px-4 py-2 bg-blue-600 rounded-xl hover:bg-blue-700 disabled:opacity-60"
           >
-            Predict Risk
+            {loading ? "Running AI..." : "Run AI Prediction"}
           </button>
 
-          <button
-            onClick={handleCreateAlert}
-            className="px-4 py-2 bg-red-600 rounded-xl hover:bg-red-700 transition"
-          >
-            Create Alert (if HIGH)
+          <button onClick={createAlert} className="px-4 py-2 bg-red-600 rounded-xl hover:bg-red-700">
+            Trigger Alert Check
           </button>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          {disaster !== "earthquake" && (
-            <>
-              <Input label="Rainfall 24h (mm)" name="rainfall_24h_mm" value={payload.rainfall_24h_mm} onChange={handleChange} />
-              <Input label="Rainfall 7d (mm)" name="rainfall_7d_mm" value={payload.rainfall_7d_mm} onChange={handleChange} />
-              <Input label="Soil Moisture (0-1)" name="soil_moisture" value={payload.soil_moisture} onChange={handleChange} />
-              <Input label="Slope (deg)" name="slope_deg" value={payload.slope_deg} onChange={handleChange} />
-              <Input label="NDVI (0-1)" name="ndvi" value={payload.ndvi} onChange={handleChange} />
-              <Input label="Plant Density (0-1)" name="plant_density" value={payload.plant_density} onChange={handleChange} />
-            </>
-          )}
-
-          {disaster === "earthquake" && (
-            <>
-              <Input label="Seismic Magnitude" name="seismic_mag" value={payload.seismic_mag} onChange={handleChange} />
-              <Input label="Depth (km)" name="depth_km" value={payload.depth_km} onChange={handleChange} />
-            </>
-          )}
+        <div className="grid md:grid-cols-2 gap-4">
+          <Slider label="Latitude" min={6} max={38} step={0.01} value={payload.latitude} onChange={(v) => setField("latitude", v)} icon={Activity} />
+          <Slider label="Longitude" min={67} max={98} step={0.01} value={payload.longitude} onChange={(v) => setField("longitude", v)} icon={Activity} />
+          <Slider label="Rainfall 24h (mm)" min={0} max={350} step={1} value={payload.rainfall_24h_mm} onChange={(v) => setField("rainfall_24h_mm", v)} icon={Waves} />
+          <Slider label="Soil Moisture" min={0} max={1} step={0.01} value={payload.soil_moisture} onChange={(v) => setField("soil_moisture", v)} icon={Gauge} />
+          <Slider label="Slope (deg)" min={0} max={60} step={0.1} value={payload.slope_deg} onChange={(v) => setField("slope_deg", v)} icon={Mountain} />
+          <Slider label="NDVI" min={0} max={1} step={0.01} value={payload.ndvi} onChange={(v) => setField("ndvi", v)} icon={Gauge} />
+          <Slider label="Plant Density" min={0} max={1} step={0.01} value={payload.plant_density} onChange={(v) => setField("plant_density", v)} icon={Gauge} />
+          <Slider label="Seismic Magnitude" min={0} max={8} step={0.1} value={payload.seismic_mag} onChange={(v) => setField("seismic_mag", v)} icon={Activity} />
+          <Slider label="Depth (km)" min={0} max={300} step={1} value={payload.depth_km} onChange={(v) => setField("depth_km", v)} icon={Activity} />
         </div>
 
         {error && <p className="text-red-400 mt-4">{error}</p>}
-
-        {result && (
-          <div className="mt-5 bg-black/30 border border-white/10 rounded-xl p-4">
-            <p className="text-lg font-semibold">
-              Risk Score: <span className="text-yellow-300">{result.risk_score}/100</span> —{" "}
-              <span className="text-green-300">{result.level}</span>
-            </p>
-
-            <ul className="mt-2 text-gray-300 list-disc pl-5">
-              {result.reasons.map((r, i) => (
-                <li key={i}>{r}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {alertRes && (
-          <div className="mt-4 bg-black/40 border border-white/10 rounded-xl p-4">
-            <p className="font-semibold">
-              Alert Engine:{" "}
-              {alertRes.alert_created ? (
-                <span className="text-green-400">✅ Alert Created</span>
-              ) : (
-                <span className="text-gray-400">No alert (risk below threshold)</span>
-              )}
-            </p>
-
-            {alertRes.alert_created && (
-              <p className="text-gray-300 mt-2">{alertRes.alert.message}</p>
-            )}
-          </div>
-        )}
       </div>
+
+      {result && (
+        <div className="grid xl:grid-cols-2 gap-4">
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-5 space-y-3">
+            <h2 className="text-xl font-semibold">Prediction Result</h2>
+            <div className={`inline-flex border rounded-xl px-3 py-2 font-semibold ${COLORS[levelText] || COLORS.Medium}`}>
+              Risk Level: {levelText}
+            </div>
+            <p>Method Used: <b>{result.method || "Unknown"}</b></p>
+            <p>
+              Confidence: <b>{result.confidence !== null && result.confidence !== undefined ? `${(Number(result.confidence) * 100).toFixed(1)}%` : "N/A"}</b>
+            </p>
+            <p>Risk Score (0-100): <b>{result.risk_score}</b></p>
+            <p className="text-gray-300">{result.human_explanation || (result.explanation || [])[0]}</p>
+
+            <div>
+              <p className="font-semibold mb-1">Top 3 Features</p>
+              <ul className="list-disc pl-5 text-gray-300">
+                {(result.top_features || []).slice(0, 3).map((item) => (
+                  <li key={item.feature}>{item.feature}: {item.importance}</li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="text-sm text-gray-400">
+              <p>Equation: {result.risk_equation}</p>
+              <p>Equation Score: {result.equation_score}</p>
+            </div>
+          </div>
+
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+            <h2 className="text-xl font-semibold mb-2">Feature Importance Chart</h2>
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={fiRows}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                  <XAxis dataKey="feature" stroke="#CBD5E1" interval={0} angle={-20} textAnchor="end" height={80} />
+                  <YAxis stroke="#CBD5E1" />
+                  <Tooltip />
+                  <Bar dataKey="importance" fill="#38bdf8" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
+        <h3 className="font-semibold mb-2">Prediction Activity Log</h3>
+        {logs.length === 0 ? <p className="text-gray-400">No activity yet.</p> : logs.map((l, i) => <p key={i} className="text-sm text-gray-300">{l}</p>)}
+      </div>
+
+      {alertRes && (
+        <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
+          <p className="font-semibold">Alert Engine Response:</p>
+          <p className="text-gray-300 mt-1">{alertRes.alert_created ? alertRes.alert.message : "No alert created."}</p>
+        </div>
+      )}
     </div>
   );
 }
 
-function Input({ label, name, value, onChange }) {
+function Slider({ label, min, max, step, value, onChange, icon: Icon }) {
   return (
-    <div>
-      <p className="text-sm text-gray-400 mb-1">{label}</p>
+    <label className="block bg-black/20 border border-white/10 rounded-xl p-3">
+      <div className="flex items-center justify-between mb-2 text-sm text-gray-300">
+        <span className="flex items-center gap-1">{Icon ? <Icon size={14} /> : null} {label}</span>
+        <span>{Number(value).toFixed(step < 1 ? 2 : 0)}</span>
+      </div>
       <input
-        name={name}
+        type="range"
+        min={min}
+        max={max}
+        step={step}
         value={value}
-        onChange={onChange}
-        className="w-full bg-black/30 border border-white/10 rounded-xl px-3 py-2 outline-none"
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full"
       />
-    </div>
+    </label>
   );
 }

@@ -9,11 +9,25 @@ import {
   BellRing,
   TrendingUp,
 } from "lucide-react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 import {
   getEarthquakes,
   getFloods,
   getLandslides,
+  getRiskTrend,
+  getDisasterFrequency,
+  getPredictionConfidenceSeries,
 } from "../api/disasterApi";
 
 function StatCard({ title, subtitle, icon: Icon, onClick, rightText }) {
@@ -60,19 +74,28 @@ export default function Dashboard() {
   const [landslides, setLandslides] = useState([]);
 
   const [loading, setLoading] = useState(true);
+  const [riskTrend, setRiskTrend] = useState([]);
+  const [frequency, setFrequency] = useState([]);
+  const [confidenceSeries, setConfidenceSeries] = useState([]);
 
   useEffect(() => {
     async function loadAll() {
       try {
         setLoading(true);
-        const [a, b, c] = await Promise.all([
+        const [a, b, c, trend, freq, conf] = await Promise.all([
           getEarthquakes(),
           getFloods(),
           getLandslides(),
+          getRiskTrend(),
+          getDisasterFrequency(),
+          getPredictionConfidenceSeries(),
         ]);
         setEq(Array.isArray(a) ? a : []);
         setFloods(Array.isArray(b) ? b : []);
         setLandslides(Array.isArray(c) ? c : []);
+        setRiskTrend(Array.isArray(trend) ? trend : []);
+        setFrequency(Array.isArray(freq) ? freq : []);
+        setConfidenceSeries(Array.isArray(conf) ? conf : []);
       } catch (e) {
         console.error("Dashboard load error:", e);
       } finally {
@@ -211,6 +234,53 @@ export default function Dashboard() {
           <div className="mt-4 p-4 rounded-2xl bg-white/5 border border-white/10 text-sm text-white/70">
             💡 Upcoming: Chain-reaction prediction (Earthquake → Landslide risk), plus notification system
             like “presidential alert” (SMS / Push).
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 mt-6">
+        <div className="p-4 rounded-2xl border border-white/10 bg-white/5">
+          <h3 className="font-semibold mb-2">Risk Trend (7 Days)</h3>
+          <div className="h-60">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={riskTrend.slice(-40).map((d) => ({ ...d, t: new Date(d.timestamp).toLocaleDateString() }))}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <XAxis dataKey="t" stroke="#CBD5E1" hide />
+                <YAxis stroke="#CBD5E1" domain={[0, 100]} />
+                <Tooltip />
+                <Line dataKey="risk_score" stroke="#38bdf8" dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="p-4 rounded-2xl border border-white/10 bg-white/5">
+          <h3 className="font-semibold mb-2">Disaster Frequency</h3>
+          <div className="h-60">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={frequency}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <XAxis dataKey="name" stroke="#CBD5E1" />
+                <YAxis stroke="#CBD5E1" />
+                <Tooltip />
+                <Bar dataKey="count" fill="#22d3ee" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="p-4 rounded-2xl border border-white/10 bg-white/5">
+          <h3 className="font-semibold mb-2">Prediction Confidence</h3>
+          <div className="h-60">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={confidenceSeries.slice(-40).map((d) => ({ ...d, t: new Date(d.timestamp).toLocaleDateString() }))}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <XAxis dataKey="t" stroke="#CBD5E1" hide />
+                <YAxis stroke="#CBD5E1" domain={[0, 1]} />
+                <Tooltip />
+                <Line dataKey="confidence" stroke="#f97316" dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
           </div>
         </div>
       </div>
