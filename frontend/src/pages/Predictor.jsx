@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { Activity, Brain, Gauge, Mountain, Waves } from "lucide-react";
+import { Activity, Brain, Gauge, Loader2, Mountain, Waves } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { predictDisasterRisk, runAlertCheck } from "../api/disasterApi";
@@ -122,9 +122,19 @@ export default function Predictor() {
           <button
             onClick={runPrediction}
             disabled={loading}
-            className="px-4 py-2 bg-blue-600 rounded-xl hover:bg-blue-700 disabled:opacity-60"
+            className="px-5 py-2.5 bg-blue-600 rounded-xl hover:bg-blue-700 disabled:opacity-60 font-semibold inline-flex items-center gap-2 shadow-lg shadow-blue-500/20"
           >
-            {loading ? "Running AI..." : "Run AI Prediction"}
+            {loading ? (
+              <>
+                <Loader2 size={16} className="animate-spin" />
+                Running AI...
+              </>
+            ) : (
+              <>
+                <Brain size={16} />
+                AI Predictor
+              </>
+            )}
           </button>
 
           <button onClick={createAlert} className="px-4 py-2 bg-red-600 rounded-xl hover:bg-red-700">
@@ -159,6 +169,38 @@ export default function Predictor() {
               Confidence: <b>{result.confidence !== null && result.confidence !== undefined ? `${(Number(result.confidence) * 100).toFixed(1)}%` : "N/A"}</b>
             </p>
             <p>Risk Score (0-100): <b>{result.risk_score}</b></p>
+            <p>
+              ML Probability:{" "}
+              <b>
+                {result.ml_probability !== null && result.ml_probability !== undefined
+                  ? `${(Number(result.ml_probability) * 100).toFixed(1)}%`
+                  : "N/A"}
+              </b>
+            </p>
+            <p>
+              Rule Score:{" "}
+              <b>
+                {result.rule_score !== null && result.rule_score !== undefined
+                  ? `${(Number(result.rule_score) * 100).toFixed(1)}%`
+                  : "N/A"}
+              </b>
+            </p>
+            <p>
+              Final Risk Score:{" "}
+              <b>
+                {result.final_risk_probability !== null && result.final_risk_probability !== undefined
+                  ? `${(Number(result.final_risk_probability) * 100).toFixed(1)}%`
+                  : `${Number(result.risk_score || 0).toFixed(1)}%`}
+              </b>
+            </p>
+            <p>
+              Confidence %:{" "}
+              <b>
+                {result.confidence !== null && result.confidence !== undefined
+                  ? `${(Number(result.confidence) * 100).toFixed(1)}%`
+                  : "N/A"}
+              </b>
+            </p>
             <p className="text-gray-300">{result.human_explanation || (result.explanation || [])[0]}</p>
 
             <div>

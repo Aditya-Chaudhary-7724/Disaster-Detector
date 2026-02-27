@@ -3,6 +3,7 @@ from flask_cors import CORS
 import time
 
 from ai_alert_engine import generate_ai_alerts
+from auto_predictor import get_cluster_risk_trend, run_auto_prediction, run_auto_prediction_spatial
 from data_pipeline import sync_all_if_due, sync_earthquakes, sync_floods, sync_landslides
 from db import (
     get_alerts,
@@ -15,12 +16,25 @@ from db import (
 )
 from predictor import predict_risk
 from research_routes import research_bp
+from ml_hybrid_predictor import load_hybrid_models
+from satellite_predictor import predict_satellite_risk
+from satellite_predictor import preload_satellite_model
 
 app = Flask(__name__)
 CORS(app)
 
 init_db()
 app.register_blueprint(research_bp)
+
+try:
+    load_hybrid_models()
+except Exception:
+    pass
+
+try:
+    preload_satellite_model()
+except Exception:
+    pass
 
 
 def _safe_sync_all():
@@ -120,7 +134,20 @@ def mitigation(disaster):
         ],
     }
 
-    return jsonify({"success": True, "disaster": disaster, "tips": tips.get(disaster, [])})
+    emergency_contacts = {
+        "earthquake": ["Police: 100", "Ambulance: 108"],
+        "flood": ["Fire Department: 101", "Rescue Team: 112"],
+        "landslide": ["Police: 100", "Medical Emergency: 108"],
+    }
+
+    return jsonify(
+        {
+            "success": True,
+            "disaster": disaster,
+            "tips": tips.get(disaster, []),
+            "emergency_contacts": emergency_contacts.get(disaster, []),
+        }
+    )
 
 
 # -------------------------------
@@ -139,8 +166,14 @@ def api_predict():
         {
             "success": True,
             "risk_level": result.get("risk_level") or (result.get("level", "LOW").title()),
+            "risk_score": result.get("risk_score"),
             "confidence": result.get("confidence"),
             "method": result.get("method", "Rule-Based"),
+            "ml_probability": result.get("ml_probability"),
+            "rule_score": result.get("rule_score"),
+            "final_risk_probability": result.get("final_risk_probability"),
+            "alpha": result.get("alpha"),
+            "latency_ms": result.get("latency_ms"),
             "explanation": result.get("explanation") or result.get("reasons", []),
             "feature_importance": result.get("feature_importance", {}),
             "top_features": result.get("top_features", []),
@@ -310,6 +343,52 @@ def analytics_prediction_confidence():
         for r in rows
     ]
     return jsonify(out)
+
+
+@app.route("/api/auto-predict/<disaster_type>", methods=["POST"])
+def auto_predict(disaster_type):
+    try:
+        result = run_auto_prediction(disaster_type)
+        if not result.get("success"):
+            return jsonify(result), 400
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/api/satellite-predict", methods=["POST"])
+def satellite_predict():
+    payload = request.get_json(force=True) or {}
+    disaster_type = str(payload.get("disaster_type") or payload.get("disaster") or "").lower()
+    image_path = payload.get("image_path")
+
+    result = predict_satellite_risk(disaster_type=disaster_type, image_path=image_path)
+    if not result.get("success"):
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+@app.route("/api/auto-predict-spatial/<disaster_type>", methods=["GET"])
+def auto_predict_spatial(disaster_type):
+    method = request.args.get("method", "kmeans")
+    try:
+        k = int(request.args.get("k", 5))
+    except (TypeError, ValueError):
+        k = 5
+
+    try:
+        result = run_auto_prediction_spatial(disaster_type=disaster_type, method=method, k=k)
+        if not result.get("success"):
+            return jsonify(result), 400
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/api/risk-trend/<int:cluster_id>", methods=["GET"])
+def risk_trend_cluster(cluster_id):
+    rows = get_cluster_risk_trend(cluster_id)
+    return jsonify({"success": True, "cluster_id": cluster_id, "points": rows})
 
 
 if __name__ == "__main__":

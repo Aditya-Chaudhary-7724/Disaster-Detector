@@ -1,0 +1,16 @@
+Story ID,Epic,Core Story,Priority,Sprint,Status
+US-01,Data Integration,Ingest live earthquake feed into unified store,High,S1,Done
+US-02,Data Integration,Sync flood proxy stream with timestamped records,High,S1,Done
+US-03,Data Integration,Normalize hazard schema for cross-module compatibility,High,S1,Done
+US-04,Hybrid Prediction Engine,Train random forest for hazard risk classes,High,S2,Done
+US-05,Hybrid Prediction Engine,Add rule fallback when ML confidence drops,High,S2,Done
+US-06,Hybrid Prediction Engine,Expose feature importance for model explainability,Medium,S2,Done
+US-07,Spatio-Temporal Modeling,Model seven-day risk trend per hazard,High,S2,In Progress
+US-08,Spatio-Temporal Modeling,Aggregate region-wise risk for hotspot detection,Medium,S3,Backlog
+US-09,Spatio-Temporal Modeling,Smooth noisy trends using confidence weighting,Medium,S3,Done
+US-10,Alert System,Map risk bands to advisory watch warning,High,S3,To Do
+US-11,Alert System,Trigger automatic alerts from high-risk predictions,High,S3,In Progress
+US-12,Mitigation Module,Serve hazard-specific mitigation guidance to users,Medium,S4,To Do
+US-13,Mitigation Module,Rank mitigation actions by current risk level,Medium,S4,Backlog
+US-14,Dashboard Visualization,Display live multi-hazard dashboard with map,High,S4,In Progress
+US-15,Dashboard Visualization,Show publication-ready analytics for review documentation,Medium,S4,To Do

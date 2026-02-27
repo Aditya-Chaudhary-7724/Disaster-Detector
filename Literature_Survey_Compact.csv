@@ -1,0 +1,17 @@
+S.No,Author & Year,Core Method,Main Result,Limitation
+1,"Zhang et al., 2020",CNN-LSTM multi-hazard fusion model,Higher multi-hazard accuracy than single-task baselines,Weak performance in sparse sensor regions
+2,"Kumar and Rao, 2020",Random Forest seismic feature classification,Reliable near-real-time earthquake risk categorization,Model drift under changing seismic noise
+3,"Li et al., 2021",Stacked ensemble flood forecasting pipeline,Lower peak-flow prediction errors during monsoons,Urban drainage effects insufficiently represented
+4,"Fernandez et al., 2021",XGBoost landslide susceptibility with GIS,Improved map precision over logistic baselines,Temporal triggers modeled at coarse granularity
+5,"Singh et al., 2021",Spatio-temporal graph neural risk modeling,Captured district-level risk propagation effectively,Attention weights lacked physical interpretability
+6,"Patel et al., 2022",Rule-ML hybrid warning architecture,Reduced false alarms versus static thresholds,Limited standardized human validation workflows
+7,"Hassan et al., 2022",SVM and RF earthquake probability model,RF improved high-risk class detection,Rare extreme-event generalization remains uncertain
+8,"Mehta et al., 2022",LSTM flood nowcasting with radar fusion,Better 6-12 hour warning lead times,Accuracy drops without radar calibration
+9,"Oliveira et al., 2023",SHAP-guided landslide boosting model,Slope and rainfall dominated risk contributions,No deployment in operational alert systems
+10,"Chen et al., 2023",Knowledge graph for hazard decision support,Improved contextual mitigation prioritization decisions,Graph maintenance and updates are costly
+11,"Roy et al., 2023",Bayesian LSTM uncertainty-aware forecasting,Calibrated confidence intervals improved warning trust,High computational load for live deployment
+12,"Garcia et al., 2024",Weighted fusion of rules and ML,Balanced interpretability and predictive performance,Cross-city policy adaptation not automated
+13,"Ibrahim et al., 2024",Transformer-based multi-hazard temporal forecasting,Improved long-horizon performance over RNN baselines,Limited causal interpretability for decisions
+14,"Park et al., 2025",Edge AI co-risk earthquake-landslide modeling,Lower latency enabled faster local alerts,Hardware heterogeneity complicated deployment
+15,"Sharma et al., 2025",Federated flood forecasting across basins,Robustness improved without data centralization,Client drift and communication overhead remain
+16,"Nakamura et al., 2026",Foundation model for hazard warning,Strong zero-shot adaptation to new events,Needs strict domain validation for safety

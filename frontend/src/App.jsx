@@ -8,6 +8,8 @@ import Floods from "./pages/Floods.jsx";
 import Landslides from "./pages/Landslides.jsx";
 import Mitigation from "./pages/Mitigation.jsx";
 import Predictor from "./pages/Predictor.jsx";
+import AutoAIPredictor from "./pages/AutoAIPredictor.jsx";
+import SpatialRiskMap from "./pages/SpatialRiskMap.jsx";
 import Alerts from "./pages/Alerts.jsx";
 import ResearchPredictor from "./pages/ResearchPredictor.jsx";
 
@@ -24,6 +26,8 @@ export default function App() {
         <Route path="/mitigation" element={<Mitigation />} />
 
         <Route path="/predictor" element={<Predictor />} />
+        <Route path="/auto-ai-predictor" element={<AutoAIPredictor />} />
+        <Route path="/spatial-risk-map" element={<SpatialRiskMap />} />
         <Route path="/research-predictor" element={<ResearchPredictor />} />
         <Route path="/alerts" element={<Alerts />} />
       </Route>

@@ -6,6 +6,8 @@ import {
   Waves,
   Mountain,
   Brain,
+  BrainCircuit,
+  Flame,
   Radar,
   Bell,
   Shield
@@ -43,6 +45,14 @@ export default function Layout() {
 
           <NavLink to="/predictor" className={linkClass}>
             <Brain size={18} /> Predictor
+          </NavLink>
+
+          <NavLink to="/auto-ai-predictor" className={linkClass}>
+            <BrainCircuit size={18} /> Auto AI Predictor
+          </NavLink>
+
+          <NavLink to="/spatial-risk-map" className={linkClass}>
+            <Flame size={18} /> Spatial Risk Map
           </NavLink>
 
           <NavLink to="/research-predictor" className={linkClass}>
