@@ -8,6 +8,8 @@ Includes:
 from __future__ import annotations
 
 import time
+import os
+import sqlite3
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -25,6 +27,8 @@ from predictor import (
 from satellite_predictor import predict_satellite_risk, predict_satellite_risk_for_bbox
 
 DATASET_FALLBACK = Path(__file__).parent / "datasets" / "disaster_dataset.csv"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "disasters.db")
 _CACHE_TTL_SEC = 300
 _SPATIAL_CACHE: Dict[str, Dict[str, object]] = {}
 _CLUSTER_HISTORY: Dict[str, List[Dict[str, object]]] = {}
@@ -127,6 +131,68 @@ def _load_db_rows(disaster_type: str, days: int = 7) -> pd.DataFrame:
 
     df = df.dropna(subset=["latitude", "longitude"])
     return df
+
+
+def _debug_table_name(disaster_type: str) -> str:
+    return {"earthquake": "earthquakes", "flood": "floods", "landslide": "landslides"}.get(disaster_type, "")
+
+
+def _debug_probe_spatial_source(disaster_type: str) -> Dict[str, object]:
+    table = _debug_table_name(disaster_type)
+    info: Dict[str, object] = {
+        "db_path": DB_PATH,
+        "db_exists": os.path.exists(DB_PATH),
+        "tables": [],
+        "rows_fetched": 0,
+        "columns": [],
+        "latest_timestamp": None,
+        "filter_fallback_used": False,
+    }
+
+    print("Disaster type requested:", disaster_type)
+
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            tdf = pd.read_sql_query("SELECT name FROM sqlite_master WHERE type='table';", conn)
+            info["tables"] = tdf["name"].tolist()
+    except Exception as exc:
+        print("DEBUG TABLE LIST ERROR:", exc)
+        return info
+
+    if not table:
+        return info
+
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            # 7-day filter debug probe
+            q = f"SELECT * FROM {table} WHERE time >= (strftime('%s','now','-7 days') * 1000)"
+            df = pd.read_sql_query(q, conn)
+
+        print("Rows fetched:", len(df))
+        print("Columns:", list(df.columns))
+        info["rows_fetched"] = int(len(df))
+        info["columns"] = [str(c) for c in df.columns]
+
+        latest_ts = None
+        if "timestamp" in df.columns and len(df):
+            latest_ts = str(df["timestamp"].max())
+            print("Latest timestamp:", latest_ts)
+        elif "time" in df.columns and len(df):
+            latest_ts = str(df["time"].max())
+            print("Latest timestamp:", latest_ts)
+        info["latest_timestamp"] = latest_ts
+
+        if df.empty:
+            print("WARNING: 7-day filter returned no data. Falling back to full dataset.")
+            with sqlite3.connect(DB_PATH) as conn:
+                df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
+            info["rows_fetched"] = int(len(df))
+            info["columns"] = [str(c) for c in df.columns]
+            info["filter_fallback_used"] = True
+    except Exception as exc:
+        print("DEBUG DATA PROBE ERROR:", exc)
+
+    return info
 
 
 def _load_dataset_rows(disaster_type: str, limit: int = 500) -> pd.DataFrame:
@@ -382,17 +448,34 @@ def get_cluster_risk_trend(cluster_id: int) -> List[Dict[str, object]]:
     return out[-80:]
 
 
-def run_auto_prediction_spatial(disaster_type: str, method: str = "kmeans", k: int = 5) -> Dict[str, object]:
+def run_auto_prediction_spatial(disaster_type: str, method: str = "kmeans", k: int = 5, debug: bool = False) -> Dict[str, object]:
     disaster_type = str(disaster_type or "").lower().strip()
     if disaster_type not in {"earthquake", "flood", "landslide"}:
         return {"success": False, "error": "Invalid disaster type. Use earthquake/flood/landslide"}
 
+    debug_info: Dict[str, object] = {}
+    if debug:
+        debug_info = _debug_probe_spatial_source(disaster_type)
+
     key = _cache_key(disaster_type, method, k)
     cached = _get_cached(key)
     if cached:
-        return {**cached, "cached": True}
+        out = {**cached, "cached": True}
+        if debug:
+            out["debug"] = {
+                **debug_info,
+                "model_file_exists": os.path.exists(os.path.join(BASE_DIR, "models", "ml_model.pkl")),
+                "satellite_model_exists": os.path.exists(os.path.join(BASE_DIR, "models", "satellite_model.h5")),
+            }
+        return out
 
     start = time.perf_counter()
+    if debug:
+        print("Loading ML model...")
+        print("Model file exists:", os.path.exists(os.path.join(BASE_DIR, "models", "ml_model.pkl")))
+        print("Loading satellite model...")
+        print("Satellite model exists:", os.path.exists(os.path.join(BASE_DIR, "models", "satellite_model.h5")))
+
     rows = _load_db_rows(disaster_type)
     source = "db"
     if rows.empty:
@@ -474,6 +557,13 @@ def run_auto_prediction_spatial(disaster_type: str, method: str = "kmeans", k: i
             "fusion": "Final=0.3*Rule + 0.4*ML + 0.3*Satellite",
         },
     }
+
+    if debug:
+        payload["debug"] = {
+            **debug_info,
+            "rows_fetched": int(len(rows)),
+            "db_exists": os.path.exists(DB_PATH),
+        }
 
     _put_cache(key, payload)
     return payload

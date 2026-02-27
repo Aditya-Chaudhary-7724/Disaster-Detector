@@ -371,13 +371,14 @@ def satellite_predict():
 @app.route("/api/auto-predict-spatial/<disaster_type>", methods=["GET"])
 def auto_predict_spatial(disaster_type):
     method = request.args.get("method", "kmeans")
+    debug = str(request.args.get("debug", "0")).lower() in {"1", "true", "yes", "on"}
     try:
         k = int(request.args.get("k", 5))
     except (TypeError, ValueError):
         k = 5
 
     try:
-        result = run_auto_prediction_spatial(disaster_type=disaster_type, method=method, k=k)
+        result = run_auto_prediction_spatial(disaster_type=disaster_type, method=method, k=k, debug=debug)
         if not result.get("success"):
             return jsonify(result), 400
         return jsonify(result)
