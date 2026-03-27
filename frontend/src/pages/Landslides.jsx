@@ -7,8 +7,10 @@ export default function Landslides() {
   const [selected, setSelected] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   async function loadLandslides() {
+    setLoading(true);
     try {
       const data = await getLandslides();
       setLandslides(data);
@@ -18,6 +20,8 @@ export default function Landslides() {
     } catch (err) {
       console.error(err);
       setError("Failed to fetch landslides");
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -57,13 +61,14 @@ export default function Landslides() {
       </div>
 
       {error && <p className="text-red-400 mb-4">{error}</p>}
+      {loading && <p className="text-yellow-300 mb-4">Loading landslide data...</p>}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* ✅ Table */}
         <div className="bg-white/5 border border-white/10 rounded-xl p-4">
           <h2 className="text-lg font-bold mb-3">Recent Landslide Reports</h2>
 
-          {landslides.length === 0 ? (
+          {!loading && landslides.length === 0 ? (
             <p className="text-gray-400">
               No landslide data stored yet. Click Sync Now.
             </p>

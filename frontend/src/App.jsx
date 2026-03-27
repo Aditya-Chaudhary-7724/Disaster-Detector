@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 
 import Layout from "./components/Layout.jsx";
@@ -14,6 +14,13 @@ import Alerts from "./pages/Alerts.jsx";
 import ResearchPredictor from "./pages/ResearchPredictor.jsx";
 
 export default function App() {
+  useEffect(() => {
+    fetch("http://127.0.0.1:5050/api/test")
+      .then((res) => res.json())
+      .then((data) => console.log("Backend connected:", data))
+      .catch((err) => console.error("Backend NOT connected", err));
+  }, []);
+
   return (
     <Routes>
       <Route element={<Layout />}>

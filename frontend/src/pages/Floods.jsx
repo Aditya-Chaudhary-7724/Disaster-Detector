@@ -7,8 +7,10 @@ export default function Floods() {
   const [selected, setSelected] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   async function loadFloods() {
+    setLoading(true);
     try {
       const data = await getFloods();
       setFloods(data);
@@ -19,6 +21,8 @@ export default function Floods() {
     } catch (err) {
       console.error(err);
       setError("Failed to fetch floods");
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -58,13 +62,14 @@ export default function Floods() {
       </div>
 
       {error && <p className="text-red-400 mb-4">{error}</p>}
+      {loading && <p className="text-yellow-300 mb-4">Loading flood data...</p>}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* ✅ Table */}
         <div className="bg-white/5 border border-white/10 rounded-xl p-4">
           <h2 className="text-lg font-bold mb-3">Recent Flood Reports</h2>
 
-          {floods.length === 0 ? (
+          {!loading && floods.length === 0 ? (
             <p className="text-gray-400">
               No flood data stored yet. Click Sync Now.
             </p>

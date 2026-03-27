@@ -1,5 +1,5 @@
 #!/bin/sh
-'''exec' "/Users/adityachaudhary/Desktop/PROJECTS/Disaster Detector/backend/venv/bin/python3" "$0" "$@"
+'''exec' "/Users/adityachaudhary/Desktop/˘/Disaster Detector/backend/venv/bin/python" "$0" "$@"
 ' '''
 # -*- coding: utf-8 -*-
 import re

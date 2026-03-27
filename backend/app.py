@@ -2,9 +2,6 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import time
 
-from ai_alert_engine import generate_ai_alerts
-from auto_predictor import get_cluster_risk_trend, run_auto_prediction, run_auto_prediction_spatial
-from data_pipeline import sync_all_if_due, sync_earthquakes, sync_floods, sync_landslides
 from db import (
     get_alerts,
     get_conn,
@@ -14,17 +11,102 @@ from db import (
     init_db,
     insert_alert,
 )
-from predictor import predict_risk
-from research_routes import research_bp
-from ml_hybrid_predictor import load_hybrid_models
-from satellite_predictor import predict_satellite_risk
-from satellite_predictor import preload_satellite_model
+
+ALERT_ENGINE_IMPORT_ERROR = None
+DATA_PIPELINE_IMPORT_ERROR = None
+PREDICTOR_IMPORT_ERROR = None
+RESEARCH_IMPORT_ERROR = None
+HYBRID_IMPORT_ERROR = None
+
+try:
+    from ai_alert_engine import generate_ai_alerts
+except Exception as exc:
+    ALERT_ENGINE_IMPORT_ERROR = str(exc)
+    print(f"AI alert engine unavailable: {ALERT_ENGINE_IMPORT_ERROR}")
+
+    def generate_ai_alerts(force=False):
+        return {"success": False, "alerts": [], "error": f"AI alert engine unavailable: {ALERT_ENGINE_IMPORT_ERROR}"}
+
+try:
+    from data_pipeline import sync_all_if_due, sync_earthquakes, sync_floods, sync_landslides
+except Exception as exc:
+    DATA_PIPELINE_IMPORT_ERROR = str(exc)
+    print(f"Data pipeline unavailable: {DATA_PIPELINE_IMPORT_ERROR}")
+
+    def sync_all_if_due():
+        return {"success": False, "error": f"Data pipeline unavailable: {DATA_PIPELINE_IMPORT_ERROR}"}
+
+    def sync_earthquakes(force=False):
+        return {"success": False, "error": f"Data pipeline unavailable: {DATA_PIPELINE_IMPORT_ERROR}"}
+
+    def sync_floods(force=False):
+        return {"success": False, "error": f"Data pipeline unavailable: {DATA_PIPELINE_IMPORT_ERROR}"}
+
+    def sync_landslides(force=False):
+        return {"success": False, "error": f"Data pipeline unavailable: {DATA_PIPELINE_IMPORT_ERROR}"}
+
+try:
+    from predictor import predict_risk
+except Exception as exc:
+    PREDICTOR_IMPORT_ERROR = str(exc)
+    print(f"Predictor unavailable: {PREDICTOR_IMPORT_ERROR}")
+
+    def predict_risk(payload):
+        return {"success": False, "error": f"Predictor unavailable: {PREDICTOR_IMPORT_ERROR}"}
+
+try:
+    from research_routes import research_bp
+except Exception as exc:
+    RESEARCH_IMPORT_ERROR = str(exc)
+    research_bp = None
+    print(f"Research routes unavailable: {RESEARCH_IMPORT_ERROR}")
+
+try:
+    from ml_hybrid_predictor import load_hybrid_models
+except Exception as exc:
+    HYBRID_IMPORT_ERROR = str(exc)
+    print(f"Hybrid model loader unavailable: {HYBRID_IMPORT_ERROR}")
+
+    def load_hybrid_models():
+        return None
+
+AUTO_PREDICT_IMPORT_ERROR = None
+SATELLITE_IMPORT_ERROR = None
+
+try:
+    from auto_predictor import get_cluster_risk_trend, run_auto_prediction, run_auto_prediction_spatial
+except Exception as exc:
+    AUTO_PREDICT_IMPORT_ERROR = str(exc)
+    print(f"Auto predictor unavailable: {AUTO_PREDICT_IMPORT_ERROR}")
+
+    def run_auto_prediction(disaster_type):
+        return {"success": False, "error": f"Auto predictor unavailable: {AUTO_PREDICT_IMPORT_ERROR}"}
+
+    def run_auto_prediction_spatial(disaster_type, method="kmeans", k=5, debug=False):
+        return {"success": False, "error": f"Auto spatial predictor unavailable: {AUTO_PREDICT_IMPORT_ERROR}"}
+
+    def get_cluster_risk_trend(cluster_id):
+        return []
+
+try:
+    from satellite_predictor import predict_satellite_risk
+    from satellite_predictor import preload_satellite_model
+except Exception as exc:
+    SATELLITE_IMPORT_ERROR = str(exc)
+    print(f"Satellite predictor unavailable: {SATELLITE_IMPORT_ERROR}")
+
+    def predict_satellite_risk(disaster_type="", image_path=None):
+        return {"success": False, "error": f"Satellite predictor unavailable: {SATELLITE_IMPORT_ERROR}"}
+
+    def preload_satellite_model():
+        return None
 
 app = Flask(__name__)
 CORS(app)
 
 init_db()
-app.register_blueprint(research_bp)
+if research_bp is not None:
+    app.register_blueprint(research_bp)
 
 try:
     load_hybrid_models()
@@ -44,12 +126,26 @@ def _safe_sync_all():
         return {}
 
 
+def _safe_list_response(fetch_fn, limit, route_name):
+    try:
+        rows = fetch_fn(limit)
+        return jsonify(rows or [])
+    except Exception as exc:
+        print(f"{route_name} API error: {exc}")
+        return jsonify([])
+
+
 # -------------------------------
 # HOME
 # -------------------------------
 @app.route("/")
 def home():
     return jsonify({"message": "Disaster Detector Backend Running ✅"})
+
+
+@app.route("/api/test", methods=["GET"])
+def test():
+    return {"status": "Backend working"}
 
 
 # -------------------------------
@@ -66,8 +162,9 @@ def fetch_india_quakes():
 
 @app.route("/api/earthquakes", methods=["GET"])
 def api_earthquakes():
+    print("Earthquake API hit")
     _safe_sync_all()
-    return jsonify(get_earthquakes(100))
+    return _safe_list_response(get_earthquakes, 100, "Earthquake")
 
 
 # -------------------------------
@@ -84,8 +181,9 @@ def fetch_floods():
 
 @app.route("/api/floods", methods=["GET"])
 def api_floods():
+    print("Flood API hit")
     _safe_sync_all()
-    return jsonify(get_floods(100))
+    return _safe_list_response(get_floods, 100, "Flood")
 
 
 # -------------------------------
@@ -102,8 +200,9 @@ def fetch_landslides():
 
 @app.route("/api/landslides", methods=["GET"])
 def api_landslides():
+    print("Landslide API hit")
     _safe_sync_all()
-    return jsonify(get_landslides(100))
+    return _safe_list_response(get_landslides, 100, "Landslide")
 
 
 # -------------------------------
@@ -155,8 +254,11 @@ def mitigation(disaster):
 # -------------------------------
 @app.route("/api/predict", methods=["POST"])
 def api_predict():
-    payload = request.get_json(force=True) or {}
-    result = predict_risk(payload)
+    try:
+        payload = request.get_json(silent=True) or {}
+        result = predict_risk(payload)
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
 
     if not result.get("success"):
         return jsonify(result), 400
@@ -241,8 +343,16 @@ def api_generate_alerts():
 
 @app.route("/api/alerts", methods=["GET"])
 def api_alerts():
-    generate_ai_alerts(force=False)
-    return jsonify(get_alerts(100))
+    try:
+        generate_ai_alerts(force=False)
+    except Exception as exc:
+        print(f"Alerts generation error: {exc}")
+    try:
+        rows = get_alerts(100)
+        return jsonify(rows or [])
+    except Exception as exc:
+        print(f"Alerts API error: {exc}")
+        return jsonify([])
 
 
 # -------------------------------
@@ -393,4 +503,5 @@ def risk_trend_cluster(cluster_id):
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    print("🚀 Disaster Detector Backend Running on http://127.0.0.1:5000")
+    app.run(debug=True, host="0.0.0.0", port=5050)

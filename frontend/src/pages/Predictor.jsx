@@ -154,6 +154,7 @@ export default function Predictor() {
           <Slider label="Depth (km)" min={0} max={300} step={1} value={payload.depth_km} onChange={(v) => setField("depth_km", v)} icon={Activity} />
         </div>
 
+        {loading && <p className="text-yellow-300 mt-4">Loading prediction...</p>}
         {error && <p className="text-red-400 mt-4">{error}</p>}
       </div>
 
