@@ -1,307 +1,224 @@
-"""Satellite image predictor.
+"""Simulated satellite predictor.
 
-Uses TensorFlow/Keras CNN when available.
-Falls back to a deterministic lightweight heuristic when TensorFlow is unavailable.
+Uses synthetic satellite-derived environmental signals to estimate hazard risk.
+The public function names are kept stable for existing routes and callers.
 """
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
+import joblib
 import numpy as np
-from PIL import Image
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 ROOT = Path(__file__).parent
-SAT_DATASET_DIR = ROOT / "dataset"
-MODEL_PATH = ROOT / "models" / "satellite_model.h5"
-IMG_SIZE = (64, 64)
+MODEL_PATH = ROOT / "models" / "satellite_rf.pkl"
+META_PATH = ROOT / "models" / "satellite_rf_meta.pkl"
 
-_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
+FEATURE_COLUMNS = ["ndvi", "rainfall_intensity", "soil_moisture", "temperature"]
 _MODEL_CACHE = None
-_BACKEND = "heuristic"
+_META_CACHE: Dict[str, object] | None = None
 
 
-def _tf_available():
-    try:
-        import tensorflow as tf  # noqa: F401
-
-        return True
-    except Exception:
-        return False
-
-
-def _ensure_placeholder_dataset(disaster_type: str | None = None) -> None:
-    hazards = ["earthquake", "flood", "landslide"] if not disaster_type else [disaster_type]
-
-    for hz in hazards:
-        for label in ["safe", "pre_disaster"]:
-            d = SAT_DATASET_DIR / hz / label
-            d.mkdir(parents=True, exist_ok=True)
-
-            existing = [p for p in d.iterdir() if p.suffix.lower() in _EXTS]
-            if existing:
-                continue
-
-            rng = np.random.default_rng(abs(hash(f"{hz}:{label}")) % (2**32))
-            for i in range(8):
-                arr = np.zeros((IMG_SIZE[0], IMG_SIZE[1], 3), dtype=np.uint8)
-                base = rng.integers(40, 170)
-                arr[:, :, :] = base
-
-                if label == "pre_disaster":
-                    for _ in range(18):
-                        x1, y1 = rng.integers(0, IMG_SIZE[0], size=2)
-                        x2, y2 = rng.integers(0, IMG_SIZE[0], size=2)
-                        arr[min(x1, x2) : max(x1, x2) + 1, min(y1, y2) : max(y1, y2) + 1, rng.integers(0, 3)] = rng.integers(170, 255)
-                else:
-                    arr = np.clip(arr + rng.normal(0, 8, arr.shape), 0, 255).astype(np.uint8)
-
-                Image.fromarray(arr).save(d / f"placeholder_{i}.png")
+def _risk_level(score: float) -> str:
+    if score > 0.7:
+        return "High"
+    if score >= 0.4:
+        return "Medium"
+    return "Low"
 
 
-def _load_image(path: Path) -> np.ndarray:
-    img = Image.open(path).convert("RGB").resize(IMG_SIZE)
-    arr = np.asarray(img, dtype=np.float32) / 255.0
-    return arr
+def _satellite_seed(disaster_type: str, bbox: Optional[Tuple[float, float, float, float]] = None) -> int:
+    token = disaster_type
+    if bbox:
+        token += ":" + ":".join(f"{value:.3f}" for value in bbox)
+    return abs(hash(token)) % (2**32)
 
 
-def _latest_image_for_disaster(disaster_type: str) -> Optional[Path]:
-    base = SAT_DATASET_DIR / disaster_type
-    if not base.exists():
-        return None
+def _build_synthetic_dataset(n: int = 3200) -> pd.DataFrame:
+    rng = np.random.default_rng(42)
+    rows = []
+    for disaster_type in ["flood", "landslide"]:
+        for _ in range(n):
+            if disaster_type == "flood":
+                rainfall = float(np.clip(rng.normal(130, 55), 0, 280))
+                soil = float(np.clip(rng.normal(0.66, 0.16), 0, 1))
+                ndvi = float(np.clip(rng.normal(0.48, 0.16), 0.05, 0.95))
+                temp = float(np.clip(rng.normal(27, 5), 10, 42))
+                base_score = 0.45 * (rainfall / 250.0) + 0.35 * soil + 0.15 * (1 - ndvi) + 0.05 * (temp / 45.0)
+            else:
+                rainfall = float(np.clip(rng.normal(95, 45), 0, 250))
+                soil = float(np.clip(rng.normal(0.62, 0.18), 0, 1))
+                ndvi = float(np.clip(rng.normal(0.36, 0.18), 0.02, 0.95))
+                temp = float(np.clip(rng.normal(24, 5), 5, 38))
+                base_score = 0.28 * (rainfall / 220.0) + 0.32 * soil + 0.30 * (1 - ndvi) + 0.10 * (temp / 40.0)
 
-    files = [p for p in base.rglob("*") if p.suffix.lower() in _EXTS and p.is_file()]
-    if not files:
-        return None
-    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return files[0]
+            noise = float(rng.normal(0, 0.04))
+            score = float(np.clip(base_score + noise, 0, 1))
+            if score < 0.4:
+                label = "Low"
+            elif score <= 0.7:
+                label = "Medium"
+            else:
+                label = "High"
+
+            rows.append(
+                {
+                    "disaster_type": disaster_type,
+                    "ndvi": ndvi,
+                    "rainfall_intensity": rainfall,
+                    "soil_moisture": soil,
+                    "temperature": temp,
+                    "risk_label": label,
+                }
+            )
+    return pd.DataFrame(rows)
 
 
-def _heuristic_probability(arr: np.ndarray) -> float:
-    gray = arr.mean(axis=2)
-    contrast = float(gray.std())
-    edges = float(np.abs(np.diff(gray, axis=0)).mean() + np.abs(np.diff(gray, axis=1)).mean())
-    p = (0.55 * contrast + 0.45 * edges) * 2.2
-    return float(np.clip(p, 0.0, 1.0))
+def _train_model(force: bool = False):
+    global _MODEL_CACHE, _META_CACHE
+    if MODEL_PATH.exists() and META_PATH.exists() and not force:
+        _MODEL_CACHE = joblib.load(MODEL_PATH)
+        _META_CACHE = joblib.load(META_PATH)
+        return _MODEL_CACHE, _META_CACHE
 
+    df = _build_synthetic_dataset()
+    X = df[FEATURE_COLUMNS]
+    y = df["risk_label"]
 
-def _load_tf_model_once():
-    global _MODEL_CACHE, _BACKEND
-    if _MODEL_CACHE is not None:
-        return _MODEL_CACHE
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=0.2,
+        random_state=42,
+        stratify=y,
+    )
+    model = Pipeline(
+        steps=[
+            ("scaler", StandardScaler()),
+            (
+                "rf",
+                RandomForestClassifier(
+                    n_estimators=260,
+                    max_depth=14,
+                    min_samples_leaf=2,
+                    random_state=42,
+                    n_jobs=-1,
+                    class_weight="balanced",
+                ),
+            ),
+        ]
+    )
+    model.fit(X_train, y_train)
+    accuracy = float((model.predict(X_test) == y_test).mean())
 
-    if not _tf_available() or not MODEL_PATH.exists():
-        _BACKEND = "heuristic"
-        _MODEL_CACHE = None
-        return None
-
-    import tensorflow as tf
-
-    _MODEL_CACHE = tf.keras.models.load_model(MODEL_PATH)
-    _BACKEND = "tensorflow"
-    return _MODEL_CACHE
+    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    meta = {"accuracy": round(accuracy, 4), "feature_columns": FEATURE_COLUMNS, "samples": int(len(df))}
+    joblib.dump(model, MODEL_PATH)
+    joblib.dump(meta, META_PATH)
+    _MODEL_CACHE = model
+    _META_CACHE = meta
+    return model, meta
 
 
 def preload_satellite_model() -> Dict[str, object]:
-    model = _load_tf_model_once()
+    _, meta = _train_model(force=False)
     return {
-        "loaded": bool(model is not None),
-        "backend": _BACKEND,
+        "loaded": True,
+        "backend": "random_forest",
         "model_path": str(MODEL_PATH),
+        "accuracy": meta.get("accuracy"),
     }
 
 
-def train_satellite_model(disaster_type: str | None = None, epochs: int = 3) -> Dict[str, object]:
-    _ensure_placeholder_dataset(disaster_type)
+def _simulate_satellite_features(disaster_type: str, feature_overrides: Optional[Dict[str, float]] = None, bbox: Optional[Tuple[float, float, float, float]] = None) -> Dict[str, float]:
+    feature_overrides = feature_overrides or {}
+    seed = _satellite_seed(disaster_type, bbox)
+    rng = np.random.default_rng(seed)
 
-    if not _tf_available():
+    lat_adj = 0.0
+    lon_adj = 0.0
+    if bbox:
+        min_lat, max_lat, min_lon, max_lon = bbox
+        lat_adj = ((min_lat + max_lat) / 2.0 - 22.0) / 20.0
+        lon_adj = ((min_lon + max_lon) / 2.0 - 82.0) / 20.0
+
+    defaults = {
+        "ndvi": float(np.clip(rng.normal(0.46 - 0.08 * lat_adj, 0.12), 0.05, 0.9)),
+        "rainfall_intensity": float(np.clip(rng.normal(110 + 18 * lon_adj, 40), 0, 260)),
+        "soil_moisture": float(np.clip(rng.normal(0.58 + 0.08 * lat_adj, 0.15), 0.05, 0.98)),
+        "temperature": float(np.clip(rng.normal(27 - 2.5 * lat_adj, 4), 8, 42)),
+    }
+
+    if disaster_type == "landslide":
+        defaults["ndvi"] = float(np.clip(defaults["ndvi"] - 0.06, 0.03, 0.85))
+        defaults["soil_moisture"] = float(np.clip(defaults["soil_moisture"] + 0.05, 0.05, 0.99))
+
+    values = {}
+    for key, default in defaults.items():
+        raw_value = feature_overrides.get(key, feature_overrides.get(key.replace("rainfall_intensity", "rainfall_24h_mm"), default))
+        try:
+            values[key] = float(raw_value)
+        except (TypeError, ValueError):
+            values[key] = default
+    return values
+
+
+def _predict_score(disaster_type: str, feature_overrides: Optional[Dict[str, float]] = None, bbox: Optional[Tuple[float, float, float, float]] = None) -> Dict[str, object]:
+    disaster_type = (disaster_type or "").lower().strip()
+    if disaster_type not in {"earthquake", "flood", "landslide"}:
+        return {"success": False, "error": "Invalid disaster type"}
+
+    if disaster_type == "earthquake":
+        features = _simulate_satellite_features("flood", feature_overrides, bbox)
+        score = float(np.clip(0.15 + 0.10 * (1 - features["ndvi"]) + 0.10 * features["soil_moisture"], 0, 1))
         return {
-            "success": False,
-            "backend": "heuristic",
-            "message": "TensorFlow not installed. Placeholder dataset prepared; heuristic mode active.",
-            "model_path": str(MODEL_PATH),
+            "success": True,
+            "disaster": disaster_type,
+            "satellite_score": round(score, 4),
+            "risk_level": _risk_level(score),
+            "backend": "simulated_satellite_rules",
+            "features": features,
+            "hazard_breakdown": {"flood_risk": round(score, 4), "landslide_risk": round(score * 0.8, 4)},
         }
 
-    import tensorflow as tf
+    model, meta = _train_model(force=False)
+    features = _simulate_satellite_features(disaster_type, feature_overrides, bbox)
+    X = pd.DataFrame([features], columns=FEATURE_COLUMNS)
+    probabilities = model.predict_proba(X)[0]
+    classes = list(model.classes_)
+    class_probs = {label: float(prob) for label, prob in zip(classes, probabilities)}
+    score = class_probs.get("High", 0.0) + 0.55 * class_probs.get("Medium", 0.0)
+    score = float(np.clip(score, 0, 1))
 
-    hazards = ["earthquake", "flood", "landslide"] if not disaster_type else [disaster_type]
-    X: List[np.ndarray] = []
-    y: List[int] = []
-
-    for hz in hazards:
-        for label, target in [("safe", 0), ("pre_disaster", 1)]:
-            d = SAT_DATASET_DIR / hz / label
-            for p in d.rglob("*"):
-                if p.suffix.lower() not in _EXTS or not p.is_file():
-                    continue
-                try:
-                    X.append(_load_image(p))
-                    y.append(target)
-                except Exception:
-                    continue
-
-    if len(X) < 10:
-        return {"success": False, "error": "Insufficient satellite images for training"}
-
-    X_arr = np.asarray(X, dtype=np.float32)
-    y_arr = np.asarray(y, dtype=np.float32)
-
-    model = tf.keras.Sequential(
-        [
-            tf.keras.layers.Input(shape=(IMG_SIZE[0], IMG_SIZE[1], 3)),
-            tf.keras.layers.Conv2D(16, 3, activation="relu"),
-            tf.keras.layers.MaxPooling2D(),
-            tf.keras.layers.Conv2D(32, 3, activation="relu"),
-            tf.keras.layers.MaxPooling2D(),
-            tf.keras.layers.Conv2D(64, 3, activation="relu"),
-            tf.keras.layers.GlobalAveragePooling2D(),
-            tf.keras.layers.Dense(32, activation="relu"),
-            tf.keras.layers.Dense(1, activation="sigmoid"),
-        ]
-    )
-    model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
-
-    model.fit(X_arr, y_arr, epochs=max(1, int(epochs)), batch_size=16, verbose=0)
-
-    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    model.save(MODEL_PATH)
-
-    global _MODEL_CACHE, _BACKEND
-    _MODEL_CACHE = model
-    _BACKEND = "tensorflow"
-
-    return {
-        "success": True,
-        "backend": "tensorflow",
-        "samples": int(len(X_arr)),
-        "model_path": str(MODEL_PATH),
-    }
-
-
-def _predict_sync(disaster_type: str, image_path: Optional[str] = None) -> Dict[str, object]:
-    disaster_type = (disaster_type or "").lower().strip()
-    if disaster_type not in {"earthquake", "flood", "landslide"}:
-        return {"success": False, "error": "Invalid disaster type"}
-
-    _ensure_placeholder_dataset(disaster_type)
-
-    chosen: Optional[Path] = None
-    if image_path:
-        p = Path(image_path)
-        if p.exists() and p.suffix.lower() in _EXTS:
-            chosen = p
-    if chosen is None:
-        chosen = _latest_image_for_disaster(disaster_type)
-
-    if chosen is None:
-        return {"success": False, "error": "No satellite image available"}
-
-    arr = _load_image(chosen)
-
-    model = _load_tf_model_once()
-    if model is not None:
-        pred = float(model.predict(np.expand_dims(arr, axis=0), verbose=0)[0][0])
-        backend = "tensorflow"
-    else:
-        pred = _heuristic_probability(arr)
-        backend = "heuristic"
-
-    pred = float(np.clip(pred, 0.0, 1.0))
-    level = "High" if pred >= 0.75 else "Medium" if pred >= 0.40 else "Low"
+    flood_score = score if disaster_type == "flood" else float(np.clip(score * 0.78, 0, 1))
+    landslide_score = score if disaster_type == "landslide" else float(np.clip(score * 0.72, 0, 1))
 
     return {
         "success": True,
         "disaster": disaster_type,
-        "image_used": str(chosen),
-        "satellite_score": round(pred, 4),
-        "risk_level": level,
-        "backend": backend,
-    }
-
-
-def _crop_by_bbox(arr: np.ndarray, bbox: Tuple[float, float, float, float]) -> np.ndarray:
-    min_lat, max_lat, min_lon, max_lon = bbox
-
-    # Approximate India bounding extents for pixel mapping.
-    lat_lo, lat_hi = 6.0, 38.5
-    lon_lo, lon_hi = 67.0, 98.5
-
-    h, w = arr.shape[0], arr.shape[1]
-
-    def clamp(v, lo, hi):
-        return max(lo, min(hi, v))
-
-    x1 = int((clamp(min_lon, lon_lo, lon_hi) - lon_lo) / (lon_hi - lon_lo) * (w - 1))
-    x2 = int((clamp(max_lon, lon_lo, lon_hi) - lon_lo) / (lon_hi - lon_lo) * (w - 1))
-    y1 = int((lat_hi - clamp(max_lat, lat_lo, lat_hi)) / (lat_hi - lat_lo) * (h - 1))
-    y2 = int((lat_hi - clamp(min_lat, lat_lo, lat_hi)) / (lat_hi - lat_lo) * (h - 1))
-
-    x1, x2 = sorted((max(0, x1), min(w - 1, x2)))
-    y1, y2 = sorted((max(0, y1), min(h - 1, y2)))
-
-    if x2 <= x1 or y2 <= y1:
-        return arr
-
-    cropped = arr[y1 : y2 + 1, x1 : x2 + 1, :]
-    if cropped.size == 0:
-        return arr
-    return np.asarray(Image.fromarray((cropped * 255).astype(np.uint8)).resize(IMG_SIZE), dtype=np.float32) / 255.0
-
-
-def predict_satellite_risk_for_bbox(disaster_type: str, bbox: Tuple[float, float, float, float], image_path: Optional[str] = None) -> Dict[str, object]:
-    disaster_type = (disaster_type or "").lower().strip()
-    if disaster_type not in {"earthquake", "flood", "landslide"}:
-        return {"success": False, "error": "Invalid disaster type"}
-
-    _ensure_placeholder_dataset(disaster_type)
-
-    chosen: Optional[Path] = None
-    if image_path:
-        p = Path(image_path)
-        if p.exists() and p.suffix.lower() in _EXTS:
-            chosen = p
-    if chosen is None:
-        chosen = _latest_image_for_disaster(disaster_type)
-    if chosen is None:
-        return {"success": False, "error": "No satellite image available"}
-
-    full = _load_image(chosen)
-    arr = _crop_by_bbox(full, bbox)
-
-    model = _load_tf_model_once()
-    if model is not None:
-        pred = float(model.predict(np.expand_dims(arr, axis=0), verbose=0)[0][0])
-        backend = "tensorflow"
-    else:
-        pred = _heuristic_probability(arr)
-        backend = "heuristic"
-
-    pred = float(np.clip(pred, 0.0, 1.0))
-    level = "High" if pred >= 0.75 else "Medium" if pred >= 0.40 else "Low"
-    return {
-        "success": True,
-        "disaster": disaster_type,
-        "image_used": str(chosen),
-        "satellite_score": round(pred, 4),
-        "risk_level": level,
-        "backend": backend,
-        "bbox": {
-            "min_lat": round(float(bbox[0]), 5),
-            "max_lat": round(float(bbox[1]), 5),
-            "min_lon": round(float(bbox[2]), 5),
-            "max_lon": round(float(bbox[3]), 5),
+        "satellite_score": round(score, 4),
+        "risk_level": _risk_level(score),
+        "backend": "random_forest",
+        "features": features,
+        "class_probabilities": {k: round(v, 4) for k, v in class_probs.items()},
+        "hazard_breakdown": {
+            "flood_risk": round(flood_score, 4),
+            "landslide_risk": round(landslide_score, 4),
         },
+        "model_accuracy": meta.get("accuracy"),
     }
 
 
-async def predict_satellite_risk_async(disaster_type: str, image_path: Optional[str] = None) -> Dict[str, object]:
-    return await asyncio.to_thread(_predict_sync, disaster_type, image_path)
+def predict_satellite_risk(disaster_type: str = "", image_path: Optional[str] = None, feature_overrides: Optional[Dict[str, float]] = None) -> Dict[str, object]:
+    return _predict_score(disaster_type=disaster_type, feature_overrides=feature_overrides, bbox=None)
 
 
-def predict_satellite_risk(disaster_type: str, image_path: Optional[str] = None) -> Dict[str, object]:
-    try:
-        return asyncio.run(asyncio.wait_for(predict_satellite_risk_async(disaster_type, image_path), timeout=0.35))
-    except Exception:
-        return _predict_sync(disaster_type, image_path)
+def predict_satellite_risk_for_bbox(disaster_type: str, bbox: Tuple[float, float, float, float], image_path: Optional[str] = None, feature_overrides: Optional[Dict[str, float]] = None) -> Dict[str, object]:
+    return _predict_score(disaster_type=disaster_type, feature_overrides=feature_overrides, bbox=bbox)

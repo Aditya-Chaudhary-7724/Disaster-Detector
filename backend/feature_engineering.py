@@ -38,7 +38,9 @@ BASE_FEATURES = [
 ROLLING_TARGETS = ["rainfall_24h_mm", "soil_moisture", "slope_deg", "seismic_magnitude"]
 ROLLING_FEATURES = [f"{c}_roll3" for c in ROLLING_TARGETS]
 AUX_FEATURES = ["geo_cluster"]
-MODEL_FEATURES = BASE_FEATURES + ROLLING_FEATURES + AUX_FEATURES
+CONTEXT_FEATURES = ["disaster_code"]
+HAZARD_INDEX_FEATURES = ["flood_index", "landslide_index", "earthquake_index"]
+MODEL_FEATURES = BASE_FEATURES + ROLLING_FEATURES + AUX_FEATURES + CONTEXT_FEATURES + HAZARD_INDEX_FEATURES
 
 
 @dataclass
@@ -82,13 +84,33 @@ def add_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
 
     out["timestamp"] = _ensure_timestamp(out)
     out = out.sort_values(["disaster_type", "timestamp"], na_position="last").copy()
-
+    out["disaster_code"] = out["disaster_type"].map({"earthquake": 0, "flood": 1, "landslide": 2}).fillna(3).astype(float)
     for base in ROLLING_TARGETS:
         out[f"{base}_roll3"] = (
             out.groupby("disaster_type", dropna=False)[base]
             .transform(lambda s: s.rolling(window=3, min_periods=1).mean())
             .astype(float)
         )
+
+    out["flood_index"] = (
+        0.42 * (out["rainfall_24h_mm"] / 350.0)
+        + 0.28 * (out["soil_moisture"])
+        + 0.18 * (out["weather_humidity"] / 100.0)
+        + 0.12 * (1.0 - np.clip(out["ndvi"], 0, 1))
+    )
+    out["landslide_index"] = (
+        0.32 * (out["slope_deg"] / 60.0)
+        + 0.24 * (out["soil_moisture"])
+        + 0.24 * (out["rainfall_24h_mm"] / 350.0)
+        + 0.20 * (1.0 - np.clip(out["ndvi"], 0, 1))
+    )
+    out["earthquake_index"] = (
+        0.62 * (out["seismic_magnitude"] / 8.5)
+        + 0.22 * (1.0 - np.clip(out["depth_km"] / 300.0, 0, 1))
+        + 0.16 * (out["seismic_magnitude_roll3"] / 8.5)
+    )
+    for col in HAZARD_INDEX_FEATURES:
+        out[col] = out[col].replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(0.0, 1.5)
 
     return out
 
@@ -99,6 +121,9 @@ def fit_feature_artifacts(df: pd.DataFrame) -> Tuple[pd.DataFrame, FeatureArtifa
     imputer = SimpleImputer(strategy="median")
     imputed = imputer.fit_transform(feat_df[BASE_FEATURES + ROLLING_FEATURES])
     imputed_df = pd.DataFrame(imputed, columns=BASE_FEATURES + ROLLING_FEATURES, index=feat_df.index)
+    imputed_df["disaster_code"] = feat_df["disaster_code"].astype(float).to_numpy()
+    for col in HAZARD_INDEX_FEATURES:
+        imputed_df[col] = feat_df[col].astype(float).to_numpy()
 
     coords = imputed_df[["latitude", "longitude"]].to_numpy()
     n_clusters = max(2, min(6, len(coords)))
@@ -124,6 +149,9 @@ def transform_with_artifacts(df: pd.DataFrame, artifacts: FeatureArtifacts) -> p
 
     imputed = artifacts.imputer.transform(feat_df[BASE_FEATURES + ROLLING_FEATURES])
     imputed_df = pd.DataFrame(imputed, columns=BASE_FEATURES + ROLLING_FEATURES, index=feat_df.index)
+    imputed_df["disaster_code"] = feat_df["disaster_code"].astype(float).to_numpy()
+    for col in HAZARD_INDEX_FEATURES:
+        imputed_df[col] = feat_df[col].astype(float).to_numpy()
 
     coords = imputed_df[["latitude", "longitude"]].to_numpy()
     geo_cluster = artifacts.kmeans.predict(coords)

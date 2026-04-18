@@ -23,9 +23,8 @@ from urllib.request import urlopen
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 
@@ -63,21 +62,28 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _structured_synthetic_dataset(n_per_hazard: int = 2500) -> pd.DataFrame:
+def _structured_synthetic_dataset(n_per_hazard: int = 2800) -> pd.DataFrame:
     rng = np.random.default_rng(42)
     rows: List[Dict[str, object]] = []
     hazards = ["earthquake", "flood", "landslide"]
+    tier_map = {
+        "Low": {"rain": (20, 35), "soil": (0.25, 0.08), "slope": (8, 5), "ndvi": (0.72, 0.10), "seismic": (1.5, 0.8), "depth": (140, 45)},
+        "Medium": {"rain": (95, 35), "soil": (0.55, 0.10), "slope": (22, 7), "ndvi": (0.48, 0.10), "seismic": (4.0, 0.8), "depth": (70, 25)},
+        "High": {"rain": (185, 45), "soil": (0.82, 0.08), "slope": (38, 8), "ndvi": (0.24, 0.09), "seismic": (6.4, 0.9), "depth": (18, 10)},
+    }
 
     for hz in hazards:
         for _ in range(n_per_hazard):
-            rainfall = float(np.clip(rng.normal(80, 55), 0, 350))
-            rainfall_7d = float(np.clip(rainfall * rng.uniform(2.0, 4.8), 0, 1400))
-            soil = float(np.clip(rng.normal(0.58, 0.18), 0, 1))
-            slope = float(np.clip(rng.normal(22, 14), 0, 60))
-            ndvi = float(np.clip(rng.normal(0.45, 0.22), 0, 1))
+            label = rng.choice(["Low", "Medium", "High"], p=[0.34, 0.33, 0.33])
+            tier = tier_map[label]
+            rainfall = float(np.clip(rng.normal(*tier["rain"]), 0, 350))
+            rainfall_7d = float(np.clip(rainfall * rng.uniform(2.2, 4.6), 0, 1400))
+            soil = float(np.clip(rng.normal(*tier["soil"]), 0, 1))
+            slope = float(np.clip(rng.normal(*tier["slope"]), 0, 60))
+            ndvi = float(np.clip(rng.normal(*tier["ndvi"]), 0, 1))
             plant = float(np.clip(rng.normal(0.5, 0.2), 0, 1))
-            seismic = float(np.clip(rng.normal(2.5, 1.7), 0, 8.5))
-            depth = float(np.clip(rng.normal(70, 55), 1, 300))
+            seismic = float(np.clip(rng.normal(*tier["seismic"]), 0, 8.5))
+            depth = float(np.clip(rng.normal(*tier["depth"]), 1, 300))
             lat = float(rng.uniform(6, 38))
             lon = float(rng.uniform(67, 98))
             temp = float(np.clip(rng.normal(28, 6), 12, 45))
@@ -86,44 +92,21 @@ def _structured_synthetic_dataset(n_per_hazard: int = 2500) -> pd.DataFrame:
             rain3h = float(np.clip(rainfall / 8 + rng.normal(0, 5), 0, 90))
 
             if hz == "earthquake":
-                seismic = float(np.clip(rng.normal(4.8, 1.3), 0.5, 8.9))
-                depth = float(np.clip(rng.normal(52, 38), 1, 250))
+                seismic = float(np.clip(seismic + {"Low": -0.3, "Medium": 0.3, "High": 0.8}[label], 0.5, 8.9))
+                depth = float(np.clip(depth + {"Low": 50, "Medium": 0, "High": -8}[label], 1, 250))
+                rainfall = float(np.clip(rainfall * 0.25, 0, 120))
             elif hz == "flood":
-                rainfall = float(np.clip(rng.normal(150, 70), 5, 420))
+                rainfall = float(np.clip(rainfall + {"Low": -5, "Medium": 20, "High": 55}[label], 5, 420))
                 rainfall_7d = float(np.clip(rainfall * rng.uniform(2.8, 5.5), 15, 1800))
-                soil = float(np.clip(rng.normal(0.72, 0.15), 0.15, 1))
-                hum = float(np.clip(rng.normal(82, 12), 30, 100))
-                slope = float(np.clip(rng.normal(9, 7), 0, 40))
+                soil = float(np.clip(soil + {"Low": -0.05, "Medium": 0.08, "High": 0.12}[label], 0.15, 1))
+                hum = float(np.clip(hum + {"Low": -8, "Medium": 2, "High": 12}[label], 30, 100))
+                slope = float(np.clip(slope * 0.45, 0, 40))
             else:
-                slope = float(np.clip(rng.normal(34, 11), 4, 65))
-                rainfall = float(np.clip(rng.normal(120, 65), 0, 390))
+                slope = float(np.clip(slope + {"Low": -2, "Medium": 8, "High": 16}[label], 4, 65))
+                rainfall = float(np.clip(rainfall + {"Low": 0, "Medium": 18, "High": 34}[label], 0, 390))
                 rainfall_7d = float(np.clip(rainfall * rng.uniform(2.5, 5.2), 0, 1650))
-                soil = float(np.clip(rng.normal(0.68, 0.16), 0, 1))
-                ndvi = float(np.clip(rng.normal(0.34, 0.18), 0, 1))
-
-            risk = (
-                0.25 * (rainfall / 350)
-                + 0.16 * (rainfall_7d / 1200)
-                + 0.18 * soil
-                + 0.15 * (slope / 60)
-                + 0.14 * (seismic / 8)
-                + 0.07 * (1 - min(depth / 300, 1.0))
-                + 0.05 * (1 - ndvi)
-            )
-            if hz == "earthquake":
-                risk += 0.13 * (seismic / 8) + 0.06 * (1 - min(depth / 120, 1.0))
-            elif hz == "flood":
-                risk += 0.12 * (rainfall / 350) + 0.08 * (hum / 100)
-            else:
-                risk += 0.12 * (slope / 60) + 0.08 * (1 - ndvi)
-
-            risk = float(np.clip(risk, 0, 1))
-            if risk < 0.40:
-                label = "Low"
-            elif risk <= 0.70:
-                label = "Medium"
-            else:
-                label = "High"
+                soil = float(np.clip(soil + {"Low": -0.03, "Medium": 0.04, "High": 0.10}[label], 0, 1))
+                ndvi = float(np.clip(ndvi - {"Low": 0.00, "Medium": 0.08, "High": 0.16}[label], 0, 1))
 
             rows.append(
                 {
@@ -151,15 +134,19 @@ def _structured_synthetic_dataset(n_per_hazard: int = 2500) -> pd.DataFrame:
 
 
 def _load_training_dataset() -> pd.DataFrame:
+    synthetic = _structured_synthetic_dataset()
     if DATASET_PATH.exists() and DATASET_PATH.stat().st_size > 0:
         try:
             df = pd.read_csv(DATASET_PATH)
             df = _normalize_columns(df)
             if "risk_label" in df.columns and len(df) > 100:
-                return df
+                keep = [c for c in synthetic.columns if c in df.columns]
+                df = df[keep].copy()
+                synthetic_tail = synthetic[keep].tail(min(len(df), 1200))
+                return pd.concat([synthetic[keep], synthetic_tail], ignore_index=True)
         except Exception:
             pass
-    return _structured_synthetic_dataset()
+    return synthetic
 
 
 def _ensure_weather_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -209,7 +196,6 @@ def train_hybrid_models(force: bool = False) -> Dict[str, object]:
         stratify=y,
     )
 
-    logreg = LogisticRegression(max_iter=600, random_state=42)
     rf = RandomForestClassifier(
         n_estimators=280,
         max_depth=16,
@@ -218,31 +204,46 @@ def train_hybrid_models(force: bool = False) -> Dict[str, object]:
         class_weight="balanced",
         n_jobs=-1,
     )
+    gb = GradientBoostingClassifier(
+        n_estimators=240,
+        learning_rate=0.06,
+        max_depth=3,
+        random_state=42,
+    )
 
-    logreg.fit(X_train, y_train)
     rf.fit(X_train, y_train)
+    gb.fit(X_train, y_train)
 
-    p1 = logreg.predict_proba(X_test)
     p2 = rf.predict_proba(X_test)
-    avg_prob = (p1 + p2) / 2
+    p3 = gb.predict_proba(X_test)
+    avg_prob = (0.60 * p2) + (0.40 * p3)
     pred = avg_prob.argmax(axis=1)
     acc = float(accuracy_score(y_test, pred))
+    precision = float(precision_score(y_test, pred, average="macro", zero_division=0))
+    recall = float(recall_score(y_test, pred, average="macro", zero_division=0))
 
-    joblib.dump(logreg, LOGREG_PATH)
     joblib.dump(rf, RF_PATH)
+    joblib.dump(gb, MODELS_DIR / "hybrid_gb.pkl")
     joblib.dump(artifacts, ARTIFACTS_PATH)
     joblib.dump(le, LABEL_ENCODER_PATH)
     meta = {
         "accuracy": round(acc, 4),
+        "precision": round(precision, 4),
+        "recall": round(recall, 4),
         "trained_at": int(time.time()),
         "dataset_rows": int(len(df)),
-        "models": [str(LOGREG_PATH), str(RF_PATH)],
+        "models": [str(RF_PATH), str(MODELS_DIR / "hybrid_gb.pkl")],
     }
+    print(
+        "Hybrid ML metrics | "
+        f"accuracy={meta['accuracy']:.4f} precision={meta['precision']:.4f} recall={meta['recall']:.4f} "
+        f"rows={meta['dataset_rows']}"
+    )
     joblib.dump(meta, META_PATH)
 
     _MODEL_CACHE = {
-        "logreg": logreg,
         "rf": rf,
+        "gb": gb,
         "artifacts": artifacts,
         "label_encoder": le,
         "meta": meta,
@@ -255,16 +256,19 @@ def load_hybrid_models() -> Dict[str, object]:
     if _MODEL_CACHE is not None:
         return _MODEL_CACHE
 
-    if not all(p.exists() for p in [LOGREG_PATH, RF_PATH, ARTIFACTS_PATH, LABEL_ENCODER_PATH, META_PATH]):
+    gb_path = MODELS_DIR / "hybrid_gb.pkl"
+    if not all(p.exists() for p in [RF_PATH, gb_path, ARTIFACTS_PATH, LABEL_ENCODER_PATH, META_PATH]):
         return train_hybrid_models(force=True)
 
     _MODEL_CACHE = {
-        "logreg": joblib.load(LOGREG_PATH),
         "rf": joblib.load(RF_PATH),
+        "gb": joblib.load(gb_path),
         "artifacts": joblib.load(ARTIFACTS_PATH),
         "label_encoder": joblib.load(LABEL_ENCODER_PATH),
         "meta": joblib.load(META_PATH),
     }
+    if float(_MODEL_CACHE["meta"].get("accuracy") or 0.0) < 0.8:
+        return train_hybrid_models(force=True)
     return _MODEL_CACHE
 
 
@@ -438,13 +442,13 @@ def predict_hybrid_ml(payload: Dict[str, object]) -> Dict[str, object]:
     df_one, weather = _prepare_feature_row(payload)
 
     X = transform_with_artifacts(df_one, models["artifacts"])
-    logreg = models["logreg"]
     rf = models["rf"]
+    gb = models["gb"]
     le: LabelEncoder = models["label_encoder"]
 
-    p_logreg = logreg.predict_proba(X)[0]
     p_rf = rf.predict_proba(X)[0]
-    p_avg = (p_logreg + p_rf) / 2
+    p_gb = gb.predict_proba(X)[0]
+    p_avg = (0.60 * p_rf) + (0.40 * p_gb)
 
     idx = int(np.argmax(p_avg))
     risk_label = str(le.inverse_transform([idx])[0])
@@ -455,11 +459,13 @@ def predict_hybrid_ml(payload: Dict[str, object]) -> Dict[str, object]:
         for name, val in zip(X.columns.tolist(), getattr(rf, "feature_importances_", np.zeros(X.shape[1])))
     }
 
-    # Combine logistic coefficients + RF importances for hybrid explainability.
-    coef_vec = np.abs(getattr(logreg, "coef_", np.zeros((1, X.shape[1])))).mean(axis=0)
+    gb_importance = {
+        name: round(float(val), 4)
+        for name, val in zip(X.columns.tolist(), getattr(gb, "feature_importances_", np.zeros(X.shape[1])))
+    }
     hybrid_importance = {}
     for i, col in enumerate(X.columns):
-        score = 0.5 * float(rf_importance.get(col, 0.0)) + 0.5 * float(coef_vec[i])
+        score = 0.6 * float(rf_importance.get(col, 0.0)) + 0.4 * float(gb_importance.get(col, 0.0))
         hybrid_importance[col] = round(score, 4)
 
     elapsed_ms = (time.perf_counter() - start) * 1000.0
@@ -474,7 +480,9 @@ def predict_hybrid_ml(payload: Dict[str, object]) -> Dict[str, object]:
         "confidence": round(ml_probability, 4),
         "feature_importance": hybrid_importance,
         "model_accuracy": models["meta"].get("accuracy"),
+        "model_precision": models["meta"].get("precision"),
+        "model_recall": models["meta"].get("recall"),
         "weather_source": weather.get("weather_source", "fallback"),
         "latency_ms": round(float(elapsed_ms), 2),
-        "ensemble": "logistic_regression + random_forest (soft vote)",
+        "ensemble": "random_forest + gradient_boosting (soft vote)",
     }

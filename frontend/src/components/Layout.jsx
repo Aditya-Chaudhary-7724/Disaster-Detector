@@ -7,10 +7,12 @@ import {
   Mountain,
   Brain,
   BrainCircuit,
+  Cpu,
   Flame,
   Radar,
   Bell,
-  Shield
+  Shield,
+  BarChart3,
 } from "lucide-react";
 
 export default function Layout() {
@@ -51,6 +53,10 @@ export default function Layout() {
             <BrainCircuit size={18} /> Auto AI Predictor
           </NavLink>
 
+          <NavLink to="/cnn-predictor" className={linkClass}>
+            <Cpu size={18} /> CNN Predictor
+          </NavLink>
+
           <NavLink to="/spatial-risk-map" className={linkClass}>
             <Flame size={18} /> Spatial Risk Map
           </NavLink>
@@ -65,6 +71,10 @@ export default function Layout() {
 
           <NavLink to="/alerts" className={linkClass}>
             <Bell size={18} /> Alerts
+          </NavLink>
+
+          <NavLink to="/performance-dashboard" className={linkClass}>
+            <BarChart3 size={18} /> Performance
           </NavLink>
         </nav>
       </aside>

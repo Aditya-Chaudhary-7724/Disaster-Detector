@@ -25,6 +25,11 @@ from predictor import (
     compute_rule_risk_landslide,
 )
 from satellite_predictor import predict_satellite_risk, predict_satellite_risk_for_bbox
+try:
+    from cnn_satellite import run_auto_cnn_prediction
+except Exception:
+    def run_auto_cnn_prediction():
+        return {"success": False, "flood_prob": 0.0, "landslide_prob": 0.0, "confidence": 0.0}
 
 DATASET_FALLBACK = Path(__file__).parent / "datasets" / "disaster_dataset.csv"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -35,11 +40,53 @@ _CLUSTER_HISTORY: Dict[str, List[Dict[str, object]]] = {}
 
 
 def _risk_level(p: float) -> str:
-    if p >= 0.75:
+    if p > 0.7:
         return "High"
     if p >= 0.40:
         return "Medium"
     return "Low"
+
+
+def _trend_label(values: List[float]) -> str:
+    if len(values) < 3:
+        return "stable"
+    x = np.arange(len(values), dtype=float)
+    slope = float(np.polyfit(x, np.asarray(values, dtype=float), 1)[0])
+    if slope > 0.015:
+        return "increasing"
+    if slope < -0.015:
+        return "decreasing"
+    return "stable"
+
+
+def _forecast_next_7_days(history: List[float]) -> List[float]:
+    values = [float(v) for v in history if v is not None]
+    if not values:
+        return [0.0] * 7
+    x = np.arange(len(values), dtype=float)
+    coeffs = np.polyfit(x, np.asarray(values, dtype=float), 1) if len(values) >= 2 else [0.0, values[-1]]
+    slope, intercept = float(coeffs[0]), float(coeffs[1])
+    out = []
+    for day in range(1, 8):
+        pred = slope * (len(values) - 1 + day) + intercept
+        out.append(round(float(np.clip(pred, 0.0, 1.0)), 4))
+    return out
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r = 6371.0
+    p1 = np.radians(lat1)
+    p2 = np.radians(lat2)
+    dlat = np.radians(lat2 - lat1)
+    dlon = np.radians(lon2 - lon1)
+    a = np.sin(dlat / 2.0) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dlon / 2.0) ** 2
+    return float(2 * r * np.arcsin(np.sqrt(a)))
+
+
+def _normalize(v: float, lo: float, hi: float) -> float:
+    if hi <= lo:
+        return 0.0
+    return float(np.clip((v - lo) / (hi - lo), 0.0, 1.0))
 
 
 def _load_db_rows(disaster_type: str, days: int = 7) -> pd.DataFrame:
@@ -297,20 +344,31 @@ def run_auto_prediction(disaster_type: str) -> Dict[str, object]:
 
     start = time.perf_counter()
     agg_payload = _aggregate_features(disaster_type)
+    rows = _load_db_rows(disaster_type, days=14)
+    if rows.empty:
+        rows = _load_dataset_rows(disaster_type, limit=100)
+    history_scores = []
+    if not rows.empty:
+        for _, row in rows.tail(14).iterrows():
+            history_scores.append(_rule_score(disaster_type, row.to_dict()))
+    trend = _trend_label(history_scores)
+    future_risk_7_days = _forecast_next_7_days(history_scores[-14:])
 
     ml = predict_hybrid_ml(agg_payload)
     ml_score = float(ml.get("ml_probability") or 0.0)
 
-    sat = predict_satellite_risk(disaster_type=disaster_type)
+    sat = predict_satellite_risk(disaster_type=disaster_type, feature_overrides=agg_payload)
     sat_score = float(sat.get("satellite_score") or 0.0)
+    cnn = run_auto_cnn_prediction()
+    cnn_score = float(cnn.get("flood_prob") or 0.0) if disaster_type == "flood" else float(cnn.get("landslide_prob") or 0.0) if disaster_type == "landslide" else float(cnn.get("confidence") or 0.0) * 0.5
 
     rule = _rule_score(disaster_type, agg_payload)
 
-    final = max(0.0, min(1.0, 0.3 * rule + 0.4 * ml_score + 0.3 * sat_score))
+    final = max(0.0, min(1.0, 0.25 * rule + 0.30 * ml_score + 0.25 * sat_score + 0.20 * cnn_score))
     latency_ms = (time.perf_counter() - start) * 1000.0
 
     explanation = {
-        "fusion_formula": "Final=0.3*Rule + 0.4*ML + 0.3*Satellite",
+        "fusion_formula": "Final=0.25*Rule + 0.30*ML + 0.25*Satellite + 0.20*CNN",
         "rolling_window": "3-sample rolling means over last 7 days",
         "derived_features": {
             "seismic_activity_frequency": agg_payload.get("seismic_activity_frequency"),
@@ -321,6 +379,7 @@ def run_auto_prediction(disaster_type: str) -> Dict[str, object]:
         "weather_source": ml.get("weather_source"),
         "dataset_source": agg_payload.get("data_source"),
         "latency_ms": round(latency_ms, 2),
+        "trend": trend,
     }
 
     return {
@@ -329,12 +388,64 @@ def run_auto_prediction(disaster_type: str) -> Dict[str, object]:
         "rule_score": round(rule, 4),
         "ml_score": round(ml_score, 4),
         "satellite_score": round(sat_score, 4),
+        "cnn_score": round(cnn_score, 4),
         "final_risk": round(final, 4),
         "risk_level": _risk_level(final),
         "confidence": round(final * 100.0, 2),
+        "trend": trend,
+        "future_risk_7_days": future_risk_7_days,
         "explanation": explanation,
         "ml_details": ml,
         "satellite_details": sat,
+        "cnn_details": cnn,
+    }
+
+
+def run_global_auto_prediction() -> Dict[str, object]:
+    candidates: List[Dict[str, object]] = []
+    errors: Dict[str, str] = {}
+
+    for disaster_type in ["earthquake", "flood", "landslide"]:
+        try:
+            result = run_auto_prediction(disaster_type)
+            if result.get("success"):
+                candidates.append(result)
+            else:
+                errors[disaster_type] = str(result.get("error") or "prediction failed")
+        except Exception as exc:
+            errors[disaster_type] = str(exc)
+
+    if not candidates:
+        return {
+            "success": False,
+            "error": "No auto prediction could be generated from available DB data",
+            "details": errors,
+        }
+
+    best = max(candidates, key=lambda item: float(item.get("final_risk") or 0.0))
+    return {
+        "success": True,
+        "disaster": best.get("disaster"),
+        "disaster_type": best.get("disaster"),
+        "risk_score": round(float(best.get("final_risk") or 0.0), 4),
+        "risk_level": best.get("risk_level"),
+        "confidence": round(float(best.get("confidence") or 0.0) / 100.0, 4),
+        "trend": best.get("trend"),
+        "explanation": best.get("explanation"),
+        "future_risk_7_days": best.get("future_risk_7_days", []),
+        "details": best,
+        "evaluated_disasters": [
+            {
+                "disaster_type": item.get("disaster"),
+                "risk_score": item.get("final_risk"),
+                "risk_level": item.get("risk_level"),
+                "confidence": item.get("confidence"),
+                "trend": item.get("trend"),
+                "future_risk_7_days": item.get("future_risk_7_days", []),
+            }
+            for item in candidates
+        ],
+        "errors": errors,
     }
 
 
@@ -416,6 +527,12 @@ def _cache_key(disaster_type: str, method: str, k: int) -> str:
     return f"{disaster_type}:{method.lower()}:{int(k)}"
 
 
+def _cache_key_local(disaster_type: str, radius_km: int, lat: float | None, lon: float | None) -> str:
+    lat_key = "auto" if lat is None else f"{lat:.2f}"
+    lon_key = "auto" if lon is None else f"{lon:.2f}"
+    return f"local:{disaster_type}:{radius_km}:{lat_key}:{lon_key}"
+
+
 def _get_cached(key: str):
     item = _SPATIAL_CACHE.get(key)
     if not item:
@@ -448,6 +565,181 @@ def get_cluster_risk_trend(cluster_id: int) -> List[Dict[str, object]]:
     return out[-80:]
 
 
+def _row_risk_hint(disaster_type: str, row: Dict[str, object]) -> float:
+    if disaster_type == "earthquake":
+        return _rule_score(disaster_type, row)
+    risk_map = {"LOW": 0.30, "MEDIUM": 0.60, "HIGH": 0.85}
+    risk_label = str(row.get("risk") or "").upper()
+    if risk_label in risk_map:
+        return float(risk_map[risk_label])
+    return _rule_score(disaster_type, row)
+
+
+def _pick_local_center(rows: pd.DataFrame, disaster_type: str, lat: float | None = None, lon: float | None = None) -> Dict[str, float]:
+    if lat is not None and lon is not None:
+        return {"latitude": float(lat), "longitude": float(lon)}
+
+    ranked = rows.copy()
+    ranked["risk_hint"] = ranked.apply(lambda r: _row_risk_hint(disaster_type, r.to_dict()), axis=1)
+    ranked = ranked.sort_values(["risk_hint", "time"], ascending=[False, False])
+    top = ranked.iloc[0]
+    return {"latitude": float(top["latitude"]), "longitude": float(top["longitude"])}
+
+
+def _filter_local_rows(rows: pd.DataFrame, center_lat: float, center_lon: float, radius_km: float) -> pd.DataFrame:
+    if rows.empty:
+        return rows
+    local = rows.copy()
+    local["distance_km"] = local.apply(
+        lambda r: _haversine_km(center_lat, center_lon, float(r["latitude"]), float(r["longitude"])),
+        axis=1,
+    )
+    local = local[local["distance_km"] <= radius_km].copy()
+    return local.sort_values("distance_km")
+
+
+def _cell_feature_vector(local_rows: pd.DataFrame, disaster_type: str, cell_lat: float, cell_lon: float, radius_km: float) -> Dict[str, float]:
+    if local_rows.empty:
+        return {
+            "latitude": cell_lat,
+            "longitude": cell_lon,
+            "rainfall_24h_mm": 0.0,
+            "soil_moisture": 0.0,
+            "slope_deg": 0.0,
+            "ndvi": 0.5,
+            "seismic_magnitude": 0.0,
+            "depth_km": 0.0,
+            "neighbor_influence": 0.0,
+            "risk_score": 0.0,
+            "reasons": ["Insufficient nearby observations"],
+        }
+
+    working = local_rows.copy()
+    working["cell_distance_km"] = working.apply(
+        lambda r: _haversine_km(cell_lat, cell_lon, float(r["latitude"]), float(r["longitude"])),
+        axis=1,
+    )
+    working = working[working["cell_distance_km"] <= max(25.0, radius_km * 0.6)].copy()
+    if working.empty:
+        return {
+            "latitude": cell_lat,
+            "longitude": cell_lon,
+            "rainfall_24h_mm": 0.0,
+            "soil_moisture": 0.0,
+            "slope_deg": 0.0,
+            "ndvi": 0.5,
+            "seismic_magnitude": 0.0,
+            "depth_km": 0.0,
+            "neighbor_influence": 0.0,
+            "risk_score": 0.0,
+            "reasons": ["No nearby events inside local analysis radius"],
+        }
+
+    weights = 1.0 / (working["cell_distance_km"].to_numpy(dtype=float) + 5.0)
+    weights = weights / np.sum(weights)
+
+    def wavg(column: str, default: float = 0.0) -> float:
+        values = pd.to_numeric(working.get(column, default), errors="coerce").fillna(default).to_numpy(dtype=float)
+        return float(np.sum(values * weights))
+
+    rainfall = wavg("rainfall_24h_mm", 0.0)
+    soil = wavg("soil_moisture", 0.0)
+    slope = wavg("slope_deg", 0.0)
+    ndvi = wavg("ndvi", 0.5)
+    seismic = wavg("seismic_magnitude", 0.0)
+    depth = wavg("depth_km", 60.0)
+    neighbor_vals = np.array([_row_risk_hint(disaster_type, row) for row in working.to_dict("records")], dtype=float)
+    neighbor_influence = float(np.sum(neighbor_vals * weights))
+
+    rain_n = _normalize(rainfall, 0.0, 220.0)
+    soil_n = _normalize(soil, 0.0, 1.0)
+    slope_n = _normalize(slope, 0.0, 55.0)
+    ndvi_inv = 1.0 - _normalize(ndvi, 0.0, 1.0)
+    seismic_n = _normalize(seismic, 0.0, 7.0)
+    depth_inv = 1.0 - _normalize(depth, 0.0, 300.0)
+
+    if disaster_type == "flood":
+        components = {
+            "High rainfall + soil saturation detected": 0.36 * rain_n + 0.28 * soil_n,
+            "Low vegetation cover increased runoff": 0.16 * ndvi_inv,
+            "Nearby flood activity increased risk": 0.20 * neighbor_influence,
+        }
+        base = 0.36 * rain_n + 0.28 * soil_n + 0.16 * ndvi_inv
+    elif disaster_type == "landslide":
+        components = {
+            "High rainfall + soil saturation detected": 0.24 * rain_n + 0.22 * soil_n,
+            "Steep terrain instability detected": 0.24 * slope_n,
+            "Nearby landslide activity increased risk": 0.20 * neighbor_influence,
+        }
+        base = 0.24 * rain_n + 0.22 * soil_n + 0.24 * slope_n + 0.10 * ndvi_inv
+    else:
+        components = {
+            "Elevated seismic activity detected": 0.42 * seismic_n,
+            "Shallow quake profile increased impact": 0.16 * depth_inv,
+            "Nearby earthquake activity increased risk": 0.24 * neighbor_influence,
+        }
+        base = 0.42 * seismic_n + 0.16 * depth_inv
+
+    risk = float(np.clip(base + 0.24 * neighbor_influence, 0.0, 1.0))
+    reasons = [text for text, _ in sorted(components.items(), key=lambda item: item[1], reverse=True)[:2]]
+    return {
+        "latitude": cell_lat,
+        "longitude": cell_lon,
+        "rainfall_24h_mm": rainfall,
+        "soil_moisture": soil,
+        "slope_deg": slope,
+        "ndvi": ndvi,
+        "seismic_magnitude": seismic,
+        "depth_km": depth,
+        "neighbor_influence": round(neighbor_influence, 4),
+        "risk_score": round(risk, 4),
+        "reasons": reasons,
+    }
+
+
+def _generate_local_grid(center_lat: float, center_lon: float, radius_km: float) -> List[Tuple[float, float]]:
+    lat_step = 0.18
+    lon_step = 0.18 / max(np.cos(np.radians(center_lat)), 0.3)
+    lat_radius_deg = radius_km / 111.0
+    lon_radius_deg = radius_km / (111.0 * max(np.cos(np.radians(center_lat)), 0.3))
+
+    coords: List[Tuple[float, float]] = []
+    lat = center_lat - lat_radius_deg
+    while lat <= center_lat + lat_radius_deg + 1e-9:
+        lon = center_lon - lon_radius_deg
+        while lon <= center_lon + lon_radius_deg + 1e-9:
+            if _haversine_km(center_lat, center_lon, lat, lon) <= radius_km:
+                coords.append((round(float(lat), 5), round(float(lon), 5)))
+            lon += lon_step
+        lat += lat_step
+    return coords
+
+
+def _cluster_danger_zones(grid_df: pd.DataFrame) -> List[Dict[str, object]]:
+    risky = grid_df[grid_df["risk_score"] >= 0.4].copy()
+    if risky.empty:
+        return []
+    coords = risky[["lat", "lng"]].to_numpy(dtype=float)
+    labels = DBSCAN(eps=0.22, min_samples=2).fit_predict(coords)
+    risky["zone_id"] = labels
+    zones: List[Dict[str, object]] = []
+    for zone_id, zone_df in risky.groupby("zone_id"):
+        centroid_lat = float(zone_df["lat"].mean())
+        centroid_lon = float(zone_df["lng"].mean())
+        avg_risk = float(zone_df["risk_score"].mean())
+        zones.append(
+            {
+                "zone_id": int(zone_id),
+                "centroid": {"lat": round(centroid_lat, 5), "lng": round(centroid_lon, 5)},
+                "risk_score": round(avg_risk, 4),
+                "risk_level": _risk_level(avg_risk),
+                "cell_count": int(len(zone_df)),
+            }
+        )
+    zones.sort(key=lambda item: item["risk_score"], reverse=True)
+    return zones
+
+
 def run_auto_prediction_spatial(disaster_type: str, method: str = "kmeans", k: int = 5, debug: bool = False) -> Dict[str, object]:
     disaster_type = str(disaster_type or "").lower().strip()
     if disaster_type not in {"earthquake", "flood", "landslide"}:
@@ -457,7 +749,11 @@ def run_auto_prediction_spatial(disaster_type: str, method: str = "kmeans", k: i
     if debug:
         debug_info = _debug_probe_spatial_source(disaster_type)
 
-    key = _cache_key(disaster_type, method, k)
+    try:
+        radius_km = int(max(50, min(100, int(k) * 15)))
+    except Exception:
+        radius_km = 75
+    key = _cache_key_local(disaster_type, radius_km, None, None)
     cached = _get_cached(key)
     if cached:
         out = {**cached, "cached": True}
@@ -485,76 +781,69 @@ def run_auto_prediction_spatial(disaster_type: str, method: str = "kmeans", k: i
     if rows.empty:
         return {"success": False, "error": "No records available for spatial clustering"}
 
-    clustered = _cluster_rows(rows, method=method, k=k)
+    center = _pick_local_center(rows, disaster_type)
+    center_lat = float(center["latitude"])
+    center_lon = float(center["longitude"])
+    local_rows = _filter_local_rows(rows, center_lat, center_lon, radius_km)
+    if local_rows.empty:
+        return {"success": False, "error": "No records available inside local radius"}
 
-    clusters_out: List[Dict[str, object]] = []
-    heatmap: List[List[float]] = []
-    alerts: List[Dict[str, object]] = []
-
-    for cid, cdf in clustered.groupby("cluster_id"):
-        feats = compute_spatial_features(cdf, clustered, disaster_type)
-
-        rule = _rule_score(disaster_type, feats)
-        ml = predict_hybrid_ml(feats)
-        ml_score = float(ml.get("ml_probability") or 0.0)
-
-        bbox = _bbox_from_cluster(cdf)
-        sat = predict_satellite_risk_for_bbox(disaster_type=disaster_type, bbox=bbox)
-        sat_score = float(sat.get("satellite_score") or 0.0)
-
-        final = max(0.0, min(1.0, 0.3 * rule + 0.4 * ml_score + 0.3 * sat_score))
-        centroid_lat = float(cdf["latitude"].mean())
-        centroid_lon = float(cdf["longitude"].mean())
-        level = _risk_level(final)
-
-        cluster_obj = {
-            "cluster_id": int(cid),
-            "centroid": {"lat": round(centroid_lat, 5), "lon": round(centroid_lon, 5)},
-            "risk_score": round(final, 4),
-            "risk_level": level,
-            "confidence": round(final, 4),
-            "rule_score": round(rule, 4),
-            "ml_score": round(ml_score, 4),
-            "satellite_score": round(sat_score, 4),
-            "size": int(len(cdf)),
-            "bbox": {
-                "min_lat": round(bbox[0], 5),
-                "max_lat": round(bbox[1], 5),
-                "min_lon": round(bbox[2], 5),
-                "max_lon": round(bbox[3], 5),
-            },
+    grid_points = _generate_local_grid(center_lat, center_lon, radius_km)
+    grid_cells: List[Dict[str, object]] = []
+    explanation_pool: List[str] = []
+    for lat, lon in grid_points:
+        cell = _cell_feature_vector(local_rows, disaster_type, lat, lon, radius_km)
+        cell_obj = {
+            "lat": lat,
+            "lng": lon,
+            "risk_score": cell["risk_score"],
+            "risk_level": _risk_level(float(cell["risk_score"])),
+            "neighbor_influence": cell["neighbor_influence"],
+            "reasons": cell["reasons"],
         }
-        clusters_out.append(cluster_obj)
-        heatmap.append([centroid_lat, centroid_lon, final])
+        grid_cells.append(cell_obj)
+        explanation_pool.extend(cell["reasons"])
 
-        if final > 0.7:
-            alerts.append(
-                {
-                    "cluster_id": int(cid),
-                    "risk_score": round(final, 4),
-                    "risk_level": level,
-                    "message": f"Cluster {cid} exceeds alert threshold",
-                }
-            )
+    grid_df = pd.DataFrame(grid_cells)
+    danger_zones = _cluster_danger_zones(grid_df)
+    alerts = [
+        {
+            "zone_id": zone["zone_id"],
+            "risk_score": zone["risk_score"],
+            "risk_level": zone["risk_level"],
+            "message": f"Danger zone {zone['zone_id']} exceeds local threshold",
+        }
+        for zone in danger_zones
+        if zone["risk_score"] >= 0.7
+    ]
+    for zone in danger_zones:
+        _record_cluster_history(disaster_type, int(zone["zone_id"]), float(zone["risk_score"]))
 
-        _record_cluster_history(disaster_type, int(cid), final)
-
-    clusters_out.sort(key=lambda x: x["cluster_id"])
+    top_explanations = []
+    for item in explanation_pool:
+        if item not in top_explanations:
+            top_explanations.append(item)
+        if len(top_explanations) >= 3:
+            break
 
     payload = {
         "success": True,
         "disaster": disaster_type,
-        "clusters": clusters_out,
-        "heatmap": heatmap,
+        "analysis_center": {"lat": round(center_lat, 5), "lng": round(center_lon, 5)},
+        "radius_km": radius_km,
+        "local_event_count": int(len(local_rows)),
+        "grid_cells": grid_cells,
+        "danger_zones": danger_zones,
         "cluster_alerts": alerts,
+        "explanations": top_explanations,
         "meta": {
-            "clustering": method.lower(),
-            "k": int(k),
+            "model": "localized_risk_grid",
             "source": source,
-            "window_days": 7,
+            "window_days": 14,
             "latency_ms": round((time.perf_counter() - start) * 1000.0, 2),
             "cache_ttl_sec": _CACHE_TTL_SEC,
-            "fusion": "Final=0.3*Rule + 0.4*ML + 0.3*Satellite",
+            "risk_equation": "Risk(x,y)=Σ(Wi*Fi)+NeighborInfluence",
+            "neighbor_influence": "Inverse-distance weighted nearby disaster risks",
         },
     }
 
@@ -562,6 +851,8 @@ def run_auto_prediction_spatial(disaster_type: str, method: str = "kmeans", k: i
         payload["debug"] = {
             **debug_info,
             "rows_fetched": int(len(rows)),
+            "local_rows": int(len(local_rows)),
+            "grid_cell_count": int(len(grid_cells)),
             "db_exists": os.path.exists(DB_PATH),
         }
 

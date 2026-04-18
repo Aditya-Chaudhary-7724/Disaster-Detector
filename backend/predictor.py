@@ -10,6 +10,12 @@ import os
 from typing import Dict, List, Tuple
 
 from ml_hybrid_predictor import predict_hybrid_ml
+from satellite_predictor import predict_satellite_risk
+try:
+    from cnn_satellite import run_auto_cnn_prediction
+except Exception:
+    def run_auto_cnn_prediction():
+        return {"success": False, "flood_prob": 0.0, "landslide_prob": 0.0, "confidence": 0.0}
 
 
 def clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -17,7 +23,7 @@ def clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
 
 
 def classify_probability(p: float) -> str:
-    if p >= 0.75:
+    if p > 0.7:
         return "HIGH"
     if p >= 0.40:
         return "MEDIUM"
@@ -180,7 +186,11 @@ def _compute_rule_score(disaster: str, payload: Dict[str, object]) -> Tuple[floa
 
 def _build_rule_only_result(disaster: str, payload: Dict[str, object], alpha: float, error: str | None = None) -> Dict[str, object]:
     rule_score, rule_reasons = _compute_rule_score(disaster, payload)
-    final_p = rule_score
+    sat = predict_satellite_risk(disaster_type=disaster, feature_overrides=payload)
+    sat_score = float(sat.get("satellite_score") or 0.0)
+    cnn = run_auto_cnn_prediction()
+    cnn_score = float(cnn.get("flood_prob") or 0.0) if disaster == "flood" else float(cnn.get("landslide_prob") or 0.0) if disaster == "landslide" else float(cnn.get("confidence") or 0.0) * 0.5
+    final_p = clamp(0.55 * rule_score + 0.25 * sat_score + 0.20 * cnn_score)
     level = classify_probability(final_p)
     eq = _weighted_equation(payload)
 
@@ -201,6 +211,8 @@ def _build_rule_only_result(disaster: str, payload: Dict[str, object], alpha: fl
         "method": "Rule-Based Fallback",
         "ml_probability": None,
         "rule_score": round(rule_score, 4),
+        "satellite_score": round(sat_score, 4),
+        "cnn_score": round(cnn_score, 4),
         "final_risk_probability": round(final_p, 4),
         "confidence": round(final_p, 4),
         "alpha": alpha,
@@ -224,8 +236,12 @@ def predict_risk(payload: Dict[str, object]) -> Dict[str, object]:
     try:
         ml = predict_hybrid_ml({**payload, "disaster_type": disaster})
         ml_prob = float(ml.get("ml_probability") or ml.get("confidence") or 0.0)
+        sat = predict_satellite_risk(disaster_type=disaster, feature_overrides=payload)
+        sat_score = float(sat.get("satellite_score") or 0.0)
+        cnn = run_auto_cnn_prediction()
+        cnn_score = float(cnn.get("flood_prob") or 0.0) if disaster == "flood" else float(cnn.get("landslide_prob") or 0.0) if disaster == "landslide" else float(cnn.get("confidence") or 0.0) * 0.5
 
-        final_p = clamp(alpha * rule_score + (1.0 - alpha) * ml_prob)
+        final_p = clamp(0.25 * rule_score + 0.30 * ml_prob + 0.25 * sat_score + 0.20 * cnn_score)
         level = classify_probability(final_p)
         eq = _weighted_equation(payload)
 
@@ -233,8 +249,8 @@ def predict_risk(payload: Dict[str, object]) -> Dict[str, object]:
         top_features = sorted(fi.items(), key=lambda x: x[1], reverse=True)[:3]
 
         explanation = [
-            f"Fusion formula: final={alpha:.2f}*rule + {1-alpha:.2f}*ml",
-            f"Rule score={rule_score:.3f}, ML probability={ml_prob:.3f}, final={final_p:.3f}",
+            "Fusion formula: final=0.25*rule + 0.30*ml + 0.25*satellite + 0.20*cnn",
+            f"Rule score={rule_score:.3f}, ML probability={ml_prob:.3f}, satellite score={sat_score:.3f}, cnn score={cnn_score:.3f}, final={final_p:.3f}",
             f"Weather source={ml.get('weather_source', 'fallback')}",
             f"Inference latency={ml.get('latency_ms', 0)} ms",
         ] + rule_reasons
@@ -248,8 +264,10 @@ def predict_risk(payload: Dict[str, object]) -> Dict[str, object]:
             "method": "Hybrid (Rule + Ensemble ML)",
             "ml_probability": round(ml_prob, 4),
             "rule_score": round(rule_score, 4),
+            "satellite_score": round(sat_score, 4),
+            "cnn_score": round(cnn_score, 4),
             "final_risk_probability": round(final_p, 4),
-            "confidence": round(ml_prob, 4),
+            "confidence": round(max(ml_prob, final_p), 4),
             "alpha": alpha,
             "feature_importance": fi,
             "top_features": [{"feature": f, "importance": v} for f, v in top_features],
@@ -258,6 +276,8 @@ def predict_risk(payload: Dict[str, object]) -> Dict[str, object]:
             "weather_source": ml.get("weather_source"),
             "latency_ms": ml.get("latency_ms"),
             "ensemble": ml.get("ensemble"),
+            "satellite_details": sat,
+            "cnn_details": cnn,
             "reasons": explanation,
             "explanation": explanation,
             "human_explanation": _human_explanation(disaster, payload),

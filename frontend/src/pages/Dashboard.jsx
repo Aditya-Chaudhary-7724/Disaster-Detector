@@ -28,6 +28,7 @@ import {
   getRiskTrend,
   getDisasterFrequency,
   getPredictionConfidenceSeries,
+  getAlerts,
 } from "../api/disasterApi";
 
 function StatCard({ title, subtitle, icon: Icon, onClick, rightText }) {
@@ -77,18 +78,20 @@ export default function Dashboard() {
   const [riskTrend, setRiskTrend] = useState([]);
   const [frequency, setFrequency] = useState([]);
   const [confidenceSeries, setConfidenceSeries] = useState([]);
+  const [alerts, setAlerts] = useState([]);
 
   useEffect(() => {
     async function loadAll() {
       try {
         setLoading(true);
-        const [a, b, c, trend, freq, conf] = await Promise.all([
+        const [a, b, c, trend, freq, conf, alertsData] = await Promise.all([
           getEarthquakes(),
           getFloods(),
           getLandslides(),
           getRiskTrend(),
           getDisasterFrequency(),
           getPredictionConfidenceSeries(),
+          getAlerts(),
         ]);
         setEq(Array.isArray(a) ? a : []);
         setFloods(Array.isArray(b) ? b : []);
@@ -96,6 +99,7 @@ export default function Dashboard() {
         setRiskTrend(Array.isArray(trend) ? trend : []);
         setFrequency(Array.isArray(freq) ? freq : []);
         setConfidenceSeries(Array.isArray(conf) ? conf : []);
+        setAlerts(Array.isArray(alertsData) ? alertsData.slice(0, 3) : []);
       } catch (e) {
         console.error("Dashboard load error:", e);
       } finally {
@@ -283,6 +287,28 @@ export default function Dashboard() {
             </ResponsiveContainer>
           </div>
         </div>
+      </div>
+
+      <div className="mt-6 p-4 rounded-2xl border border-white/10 bg-white/5">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <h3 className="font-semibold">Recent Alerts</h3>
+          <button onClick={() => nav("/alerts")} className="text-sm px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15">
+            Open Alerts
+          </button>
+        </div>
+        {alerts.length === 0 ? (
+          <p className="text-gray-400">No alerts available right now.</p>
+        ) : (
+          <div className="grid md:grid-cols-3 gap-3">
+            {alerts.map((alert) => (
+              <div key={alert.id} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                <p className="font-semibold capitalize">{alert.disaster || "Unknown"} • {alert.level}</p>
+                <p className="text-sm text-gray-300 mt-1">{alert.message}</p>
+                <p className="text-xs text-gray-500 mt-2">{alert.timestamp || new Date(alert.created_at).toLocaleString()}</p>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

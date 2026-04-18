@@ -87,3 +87,39 @@ export async function runAutoPredict(disasterType) {
     body: JSON.stringify({}),
   });
 }
+
+export async function runAutoPredictNoInput() {
+  return apiRequest("/api/auto-predict", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+}
+
+export async function runCnnPredict(imagePath) {
+  return apiRequest("/api/cnn-predict", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(imagePath || {}),
+  });
+}
+
+export async function getPerformanceSnapshot() {
+  return apiRequest("/api/performance");
+}
+
+export async function getNearestRisks(lat, lon) {
+  return apiRequest(`/api/nearest-risks?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`);
+}
+
+export async function getHighRiskLocation() {
+  return apiRequest("/api/high-risk-location");
+}
+
+export async function getWeatherData(lat, lng) {
+  return apiRequest(`/api/weather-data?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`);
+}
+
+export async function getEnvironmentalData(lat, lng) {
+  return apiRequest(`/api/environmental-data?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`);
+}

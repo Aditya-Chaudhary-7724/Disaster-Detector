@@ -127,6 +127,14 @@ def _alert_type(disaster: str, watch: bool = False) -> str:
     return "Landslide Advisory" if not watch else "Landslide Watch"
 
 
+def _alert_descriptor(score: float) -> tuple[str, str]:
+    if score > 0.7:
+        return "HIGH", "Warning"
+    if score >= 0.4:
+        return "MEDIUM", "Watch"
+    return "LOW", "Advisory"
+
+
 def generate_ai_alerts(force: bool = False) -> Dict[str, object]:
     last_sync = float(get_sync_state("ai_alert_last_sync", 0) or 0)
     now = time.time()
@@ -156,35 +164,41 @@ def generate_ai_alerts(force: bool = False) -> Dict[str, object]:
         if not pred.get("success"):
             continue
 
-        level = str(pred.get("level") or "LOW").upper()
+        score = float(pred.get("final_risk_probability") or 0.0)
+        level, alert_message_type = _alert_descriptor(score)
         confidence = float(pred.get("confidence") or 0.0)
         rising = _trend_for_disaster(disaster)
 
-        trigger_high = level == "HIGH" and confidence > 0.85
+        trigger_high = level == "HIGH"
         trigger_watch = level == "MEDIUM" and rising
+        trigger_advisory = level == "LOW" and rising and confidence >= 0.35
 
-        if not (trigger_high or trigger_watch):
+        if not (trigger_high or trigger_watch or trigger_advisory):
             continue
 
         watch = trigger_watch and not trigger_high
-        alert_label = "RED ALERT" if trigger_high else "ORANGE ALERT"
+        alert_label = "RED ALERT" if trigger_high else "ORANGE ALERT" if trigger_watch else "BLUE ALERT"
+        location = payload.get("region") or "India risk zone"
         alert = {
             "alert_type": alert_label,
             "type": alert_label,
             "disaster": disaster,
-            "region": "India risk zone",
+            "region": location,
             "level": level,
+            "priority": level,
             "confidence": round(confidence, 4),
+            "risk_score": round(score, 4),
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(created_at / 1000.0)),
+            "location": location,
             "message": (
-                f"{alert_label} | {_alert_type(disaster, watch=watch)} | {level} risk | "
-                f"confidence={confidence:.2f} | trend={'rising' if rising else 'stable'}"
+                f"{alert_message_type}: {_alert_type(disaster, watch=watch)} | {level} risk | "
+                f"score={score:.2f} | confidence={confidence:.2f} | trend={'rising' if rising else 'stable'}"
             ),
             "lat": payload.get("latitude"),
             "lon": payload.get("longitude"),
             "created_at": created_at,
         }
-        insert_alert(alert)
-        created.append(alert)
+        created.append(insert_alert(alert))
 
     set_sync_state("ai_alert_last_sync", now)
 

@@ -12,10 +12,13 @@ import AutoAIPredictor from "./pages/AutoAIPredictor.jsx";
 import SpatialRiskMap from "./pages/SpatialRiskMap.jsx";
 import Alerts from "./pages/Alerts.jsx";
 import ResearchPredictor from "./pages/ResearchPredictor.jsx";
+import CnnPredictor from "./pages/CnnPredictor.jsx";
+import PerformanceDashboard from "./pages/PerformanceDashboard.jsx";
+import { BASE_URL } from "./api/disasterApi";
 
 export default function App() {
   useEffect(() => {
-    fetch("http://127.0.0.1:5050/api/test")
+    fetch(`${BASE_URL}/api/test`)
       .then((res) => res.json())
       .then((data) => console.log("Backend connected:", data))
       .catch((err) => console.error("Backend NOT connected", err));
@@ -34,9 +37,11 @@ export default function App() {
 
         <Route path="/predictor" element={<Predictor />} />
         <Route path="/auto-ai-predictor" element={<AutoAIPredictor />} />
+        <Route path="/cnn-predictor" element={<CnnPredictor />} />
         <Route path="/spatial-risk-map" element={<SpatialRiskMap />} />
         <Route path="/research-predictor" element={<ResearchPredictor />} />
         <Route path="/alerts" element={<Alerts />} />
+        <Route path="/performance-dashboard" element={<PerformanceDashboard />} />
       </Route>
     </Routes>
   );

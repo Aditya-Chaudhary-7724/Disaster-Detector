@@ -1,5 +1,27 @@
 import { BASE_URL } from "./disasterApi";
 
+async function parseResponse(res, fallbackMessage) {
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || err.message || fallbackMessage);
+  }
+  return res.json();
+}
+
+export async function runAutomaticPrediction() {
+  try {
+    const res = await fetch(`${BASE_URL}/api/auto-predict`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    return await parseResponse(res, "Automatic prediction failed");
+  } catch (err) {
+    console.error("API FAILED:", err);
+    throw err;
+  }
+}
+
 export async function runAutoPrediction(disasterType) {
   try {
     const res = await fetch(`${BASE_URL}/api/auto-predict/${disasterType}`, {
@@ -7,12 +29,7 @@ export async function runAutoPrediction(disasterType) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
     });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || "Auto prediction failed");
-    }
-    return await res.json();
+    return await parseResponse(res, "Auto prediction failed");
   } catch (err) {
     console.error("API FAILED:", err);
     throw err;
@@ -26,12 +43,7 @@ export async function runSatellitePrediction(disasterType) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ disaster_type: disasterType }),
     });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || "Satellite prediction failed");
-    }
-    return await res.json();
+    return await parseResponse(res, "Satellite prediction failed");
   } catch (err) {
     console.error("API FAILED:", err);
     throw err;
