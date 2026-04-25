@@ -1,50 +1,42 @@
-export const BASE_URL = "http://127.0.0.1:5050";
+const configuredUrl = import.meta.env.VITE_API_URL?.trim() || "";
+export const BASE_URL = configuredUrl || "http://127.0.0.1:5050";
 
 async function apiRequest(path, options = {}) {
-  try {
-    const res = await fetch(`${BASE_URL}${path}`, options);
-    if (!res.ok) {
-      let message = `API error (${res.status})`;
-      try {
-        const body = await res.json();
-        message = body?.error || body?.message || message;
-      } catch {
-        // keep fallback message
-      }
-      throw new Error(message);
+  const response = await fetch(`${BASE_URL}${path}`, options);
+  if (!response.ok) {
+    let message = `API error (${response.status})`;
+    try {
+      const body = await response.json();
+      message = body.error || body.message || message;
+    } catch {
+      // Keep fallback message.
     }
-    return await res.json();
-  } catch (err) {
-    console.error("API FAILED:", err);
-    throw err;
+    throw new Error(message);
   }
+  return response.json();
 }
 
-export async function getEarthquakes() {
-  return apiRequest("/api/earthquakes");
+export function getRegions() {
+  return apiRequest("/api/regions");
+}
+export function getDashboardData(disaster = "flood") {
+  return apiRequest(`/api/dashboard?disaster=${encodeURIComponent(disaster)}`);
 }
 
-export async function fetchIndiaEarthquakesToDB() {
-  return apiRequest("/api/fetch-india");
+export function getMapData(disaster = "flood") {
+  return apiRequest(`/api/map?disaster=${encodeURIComponent(disaster)}`);
 }
 
-export async function getFloods() {
-  return apiRequest("/api/floods");
+export function getDisasterData(disaster) {
+  const routeMap = {
+    earthquake: "/api/earthquakes",
+    flood: "/api/floods",
+    landslide: "/api/landslides",
+  };
+  return apiRequest(routeMap[disaster]);
 }
 
-export async function fetchFloodsToDB() {
-  return apiRequest("/api/fetch-floods");
-}
-
-export async function getLandslides() {
-  return apiRequest("/api/landslides");
-}
-
-export async function fetchLandslidesToDB() {
-  return apiRequest("/api/fetch-landslides");
-}
-
-export async function predictDisasterRisk(payload) {
+export function predictDisasterRisk(payload) {
   return apiRequest("/api/predict", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -52,74 +44,22 @@ export async function predictDisasterRisk(payload) {
   });
 }
 
-export async function runAlertCheck(payload) {
-  return apiRequest("/api/run-alert-check", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function getAlerts() {
+export function getAlerts() {
   return apiRequest("/api/alerts");
 }
 
-export async function generateAlerts() {
+export function generateAlerts() {
   return apiRequest("/api/alerts/generate", { method: "POST" });
 }
 
-export async function getRiskTrend() {
-  return apiRequest("/api/analytics/risk-trend");
+export function getValidationMetrics() {
+  return apiRequest("/api/validation");
 }
 
-export async function getDisasterFrequency() {
-  return apiRequest("/api/analytics/disaster-frequency");
+export function getMitigationGuidance() {
+  return apiRequest("/api/mitigation");
 }
 
-export async function getPredictionConfidenceSeries() {
-  return apiRequest("/api/analytics/prediction-confidence");
-}
-
-export async function runAutoPredict(disasterType) {
-  return apiRequest(`/api/auto-predict/${disasterType}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({}),
-  });
-}
-
-export async function runAutoPredictNoInput() {
-  return apiRequest("/api/auto-predict", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({}),
-  });
-}
-
-export async function runCnnPredict(imagePath) {
-  return apiRequest("/api/cnn-predict", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(imagePath || {}),
-  });
-}
-
-export async function getPerformanceSnapshot() {
-  return apiRequest("/api/performance");
-}
-
-export async function getNearestRisks(lat, lon) {
-  return apiRequest(`/api/nearest-risks?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`);
-}
-
-export async function getHighRiskLocation() {
-  return apiRequest("/api/high-risk-location");
-}
-
-export async function getWeatherData(lat, lng) {
-  return apiRequest(`/api/weather-data?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`);
-}
-
-export async function getEnvironmentalData(lat, lng) {
-  return apiRequest(`/api/environmental-data?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`);
+export function getModelInfo() {
+  return apiRequest("/api/model-info");
 }
